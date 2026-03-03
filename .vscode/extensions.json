@@ -1,0 +1,7 @@
+{
+  "recommendations": [
+    "charliermarsh.ruff",         // ruff linter + formatter
+    "ms-python.python",           // Python language support
+    "ms-python.vscode-pylance"    // type checking + IntelliSense
+  ]
+}

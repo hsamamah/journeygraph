@@ -1,0 +1,74 @@
+[project]
+name = "journeygraph"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "gtfs-realtime-bindings>=2.0.0",
+    "neo4j>=6.1.0",
+    "pandas>=3.0.1",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.13.1",
+    "python-dotenv>=1.2.2",
+    "requests>=2.32.5",
+]
+
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+]
+
+# ── Ruff: global settings ──────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py314"
+line-length    = 88
+
+# ── Ruff: linter ──────────────────────────────────────────────────────────────
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors       — basic style (whitespace, indentation)
+    "W",   # pycodestyle warnings     — trailing whitespace, blank lines
+    "F",   # pyflakes                 — undefined names, unused imports
+    "I",   # isort                    — import order
+    "UP",  # pyupgrade                — use modern Python syntax (e.g. X | Y over Union[X, Y])
+    "B",   # flake8-bugbear           — likely bugs and design problems
+    "C4",  # flake8-comprehensions    — simplify list/dict/set comprehensions
+    "SIM", # flake8-simplify          — simplifiable code patterns
+    "TCH", # flake8-type-checking     — move type-only imports into TYPE_CHECKING blocks
+    "RUF", # ruff-specific rules      — misc quality rules
+]
+ignore = [
+    "E501",   # line too long — handled by formatter, not linter
+    "B008",   # do not perform function calls in argument defaults (too strict for our use)
+    "SIM108", # ternary operator — sometimes if/else is clearer
+]
+
+# Allow autofix for all rules that are marked safe
+fixable   = ["ALL"]
+unfixable = []
+
+# Don't flag unused imports in __init__.py files (re-exports are intentional)
+[tool.ruff.lint.per-file-ignores]
+"__init__.py"  = ["F401"]
+"tests/**"     = ["S101"]   # assert is fine in tests
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]   # tells isort that src.* are your own imports
+force-sort-within-sections = true
+
+# ── Ruff: formatter (replaces black) ──────────────────────────────────────────
+[tool.ruff.format]
+quote-style              = "double"
+indent-style             = "space"
+skip-magic-trailing-comma = false
+line-ending              = "auto"
+
+# ── Pytest ─────────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths     = ["tests"]
+pythonpath    = ["."]          # makes src.* importable without installing the package
+addopts       = "-ra -q --cov=src --cov-report=term-missing"
