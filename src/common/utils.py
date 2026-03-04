@@ -32,7 +32,7 @@ def safe_int(value) -> int | None:
     """Convert to int, returning None on failure."""
     try:
         return int(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
 
 
@@ -40,5 +40,5 @@ def safe_float(value) -> float | None:
     """Convert to float, returning None on failure."""
     try:
         return float(value)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):
         return None
