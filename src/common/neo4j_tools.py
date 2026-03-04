@@ -10,12 +10,15 @@ Usage:
 """
 
 from neo4j import GraphDatabase
-from src.common.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+from src.common.config import get_config
 
 
 class Neo4jManager:
     def __init__(self):
-        self.driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+        config = get_config()
+        self.driver = GraphDatabase.driver(
+            config.neo4j_uri, auth=(config.neo4j_user, config.neo4j_password)
+        )
 
     def close(self):
         self.driver.close()

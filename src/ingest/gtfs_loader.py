@@ -11,14 +11,15 @@ This module is the only place that touches raw GTFS files.
 All layer extract.py files receive the output of load() as their input.
 """
 
-import zipfile
-import requests
-import pandas as pd
 from pathlib import Path
+import zipfile
 
-from src.common.config import GTFS_FEED_URL, WMATA_API_KEY
-from src.common.paths import RAW_DIR, GTFS_DIR
+import pandas as pd
+import requests
+
+from src.common.config import get_config
 from src.common.logger import get_logger
+from src.common.paths import GTFS_DIR, RAW_DIR
 
 logger = get_logger(__name__)
 
@@ -84,9 +85,10 @@ def download(force: bool = False) -> Path:
         )
         return zip_path
 
-    logger.info(f"Downloading GTFS feed from {GTFS_FEED_URL} ...")
-    headers = {"api_key": WMATA_API_KEY}
-    response = requests.get(GTFS_FEED_URL, headers=headers, timeout=60)
+    config = get_config()
+    logger.info(f"Downloading GTFS feed from {config.gtfs_feed_url} ...")
+    headers = {"api_key": config.wmata_api_key}
+    response = requests.get(config.gtfs_feed_url, headers=headers, timeout=60)
     response.raise_for_status()
 
     zip_path.write_bytes(response.content)

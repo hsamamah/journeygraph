@@ -14,10 +14,10 @@ Usage:
     alerts  = client.get_gtfs_rt_alerts()
 """
 
-import requests
 from google.transit import gtfs_realtime_pb2
+import requests
 
-from src.common.config import WMATA_API_KEY
+from src.common.config import get_config
 from src.common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -33,9 +33,10 @@ _TIMEOUT = 30
 class WMATAClient:
     """Thin wrapper around the WMATA developer API."""
 
-    def __init__(self):
+    def __init__(self, api_key: str | None = None):
+        config = get_config()
         self._session = requests.Session()
-        self._session.headers.update({"api_key": WMATA_API_KEY})
+        self._session.headers.update({"api_key": api_key or config.wmata_api_key})
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
