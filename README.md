@@ -2,6 +2,22 @@
 
 ETL pipeline that loads WMATA transit data into a Neo4j knowledge graph. Ingests GTFS static feeds and real-time WMATA API data across four domain layers: Physical Infrastructure, Service & Schedule, Fare, and Accessibility.
 
+> **Current state:** The Fare layer is implemented and tested. The Physical, Service & Schedule, and Accessibility layers are stubs — see [Adding a New Layer](#adding-a-new-layer) to implement yours.
+
+---
+
+## How It Works
+
+`pipeline.py` is the main entry point. It handles two things:
+
+1. **Downloading the GTFS feed** — fetches the WMATA static GTFS zip, extracts it, and parses every CSV into a shared `dict[str, pd.DataFrame]` keyed by filename stem (e.g. `gtfs_data["stops"]`, `gtfs_data["fare_leg_rules"]`).
+
+2. **Running domain layers** — passes that dict to each layer's `run()` function alongside a Neo4j connection. Layers are resolved in dependency order automatically.
+
+Each layer is responsible for its own slice of the graph. The pipeline doesn't care how a layer is structured internally — it only calls `run(gtfs_data, neo4j)` from the layer's `__init__.py`.
+
+The Fare layer (`src/layers/fare/`) is a good reference implementation. It splits the work into three files — `extract.py`, `transform.py`, `load.py` — but that structure is a convention, not a requirement.
+
 ---
 
 ## Setup
@@ -25,46 +41,40 @@ WMATA_API_KEY=your_api_key
 
 ## GTFS Static Feed
 
-The pipeline requires a local copy of the WMATA GTFS static feed before any layers can run. The feed is downloaded from the WMATA API using your `WMATA_API_KEY` and extracted into `data/gtfs/`.
+Download the WMATA GTFS feed before running any layers. It lands in `data/gtfs/` (git-ignored).
 
-**First-time setup — download only:**
 ```bash
+# Download only — does not touch Neo4j
 uv run python -m src.pipeline --download-only
-```
 
-This downloads the zip to `data/raw/gtfs.zip`, extracts all CSVs into `data/gtfs/`, and exits without touching Neo4j. Both directories are git-ignored.
-
-**Download and run in one command:**
-```bash
-# Download feed then run all layers
+# Download then run all layers
 uv run python -m src.pipeline --download
 
-# Download feed then run specific layers
+# Download then run specific layers
 uv run python -m src.pipeline --download --layers fare
+
+# Force re-download when the feed has been updated
+uv run python -m src.pipeline --force-download
 ```
 
-**Subsequent runs** skip the download automatically if `data/gtfs/` already has files:
+Once downloaded, subsequent runs use the cached files automatically:
 ```bash
 uv run python -m src.pipeline --layers fare   # uses cached feed
 ```
 
-**Force a fresh download** when the feed has been updated (WMATA publishes new feeds roughly every 6 months — check `feed_start_date` / `feed_end_date` in `data/gtfs/feed_info.txt`):
-```bash
-uv run python -m src.pipeline --force-download
-```
-
-> The default feed URL points to `https://api.wmata.com/gtfs/rail-bus-gtfs-static.zip`. To override (e.g. for a local feed file during development), set `GTFS_FEED_URL` in your `.env`.
+> The default feed URL is `https://api.wmata.com/gtfs/rail-bus-gtfs-static.zip`. Override by setting `GTFS_FEED_URL` in your `.env`.
+> WMATA publishes new feeds roughly every 6 months — check `feed_start_date` / `feed_end_date` in `data/gtfs/feed_info.txt` to know if yours is stale.
 
 ---
 
 ## Running the Pipeline
 
 ```bash
-# Full run (all layers) — assumes feed already downloaded
+# Run all layers
 uv run python -m src.pipeline
 
-# Specific layers — dependencies resolved automatically
-# e.g. requesting fare also runs physical first
+# Run specific layers — dependencies resolved automatically
+# e.g. --layers fare will run physical first since fare depends on it
 uv run python -m src.pipeline --layers fare
 uv run python -m src.pipeline --layers physical fare
 
@@ -78,18 +88,18 @@ uv run python -m src.pipeline --layers fare --dry-run
 
 ```
 src/
-├── common/         # Shared utilities (logger, Neo4j driver, config, paths)
+├── common/         # Shared utilities (logger, Neo4j driver, config, paths, validators)
 ├── ingest/         # GTFS downloader + WMATA API client
 ├── layers/
-│   ├── physical/         # Stops, pathways, levels
-│   ├── service_schedule/ # Routes, trips, calendar
-│   ├── fare/             # Fare products, rules, media
-│   └── accessibility/    # Elevator/escalator outage events
-└── pipeline.py     # Entry point
+│   ├── physical/         # Stops, pathways, levels  [stub]
+│   ├── service_schedule/ # Routes, trips, calendar  [stub]
+│   ├── fare/             # Fare products, zones, rules, media  [implemented]
+│   └── accessibility/    # Elevator/escalator outage events  [stub]
+└── pipeline.py     # Entry point — download + layer orchestration
 data/
-├── raw/            # Downloaded zips and API dumps (git-ignored)
+├── raw/            # Downloaded zips (git-ignored)
 └── gtfs/           # Extracted GTFS CSVs (git-ignored)
-queries/            # Shared Cypher query library
+queries/            # Cypher query library (one folder per layer)
 tests/
 ```
 
@@ -97,40 +107,47 @@ tests/
 
 ## Adding a New Layer
 
-Each layer follows the same three-file contract:
+The only hard requirement is a `run(gtfs_data, neo4j)` function in your layer's `__init__.py`:
 
-```
-layers/<name>/
-├── __init__.py   # exposes run(gtfs_data, neo4j)
-├── extract.py    # pulls relevant keys from gtfs_data dict
-├── transform.py  # cleans data + runs pre-load validation (raises on failure)
-└── load.py       # writes to Neo4j + runs post-load validation (raises on failure)
+```python
+# src/layers/my_layer/__init__.py
+import pandas as pd
+from src.common.neo4j_tools import Neo4jManager
+
+def run(gtfs_data: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
+    stops = gtfs_data["stops"]   # any GTFS file is available here
+    # ... write nodes and relationships to neo4j
 ```
 
-**1. Register the layer** in `src/common/layers.py`:
+The Fare layer splits this into `extract.py → transform.py → load.py` which is a good pattern for anything non-trivial — but a single file is fine for simpler layers.
+
+**Register the layer** in `src/common/layers.py`:
 ```python
 class Layer(str, Enum):
-    MY_LAYER = "my_layer"           # add here
+    MY_LAYER = "my_layer"
 
 DEPENDENCIES = {
-    Layer.MY_LAYER: [Layer.PHYSICAL],  # list layers that must run first
+    Layer.MY_LAYER: [Layer.PHYSICAL],  # layers that must run first; [] if none
 }
 ```
 
-**2. Follow the config rule** — never import config constants at module level. Always call `get_config()` inside a function:
-```python
-# ✅ correct — called inside a function, only when needed
-def download():
-    config = get_config()
-    requests.get(config.gtfs_feed_url, ...)
+**Four rules to follow:**
 
-# ❌ wrong — raises at import time if .env is missing, blocks --download-only
-from src.common.config import GTFS_FEED_URL
+1. **Config** — never import config constants at module level. Always call `get_config()` inside a function. Module-level imports raise at startup without a `.env` and break `--download-only`.
+```python
+# ✅ correct
+def run(...):
+    config = get_config()
+
+# ❌ wrong — breaks pipeline startup without .env
+from src.common.config import WMATA_API_KEY
 ```
 
-**3. Keep Neo4jManager lazy** — instantiate it inside `run()`, never at module level.
+2. **Neo4jManager** — instantiate inside `run()`, never at module level.
 
-**4. Wire pre- and post-load validators** in `src/common/validators/` following the pattern in `fare_zones.py`. Pre-load runs at the end of `transform.py` and raises `ValueError` on failure. Post-load runs at the end of `load.py` after all writes complete.
+3. **Validators** — add pre- and post-load checks in `src/common/validators/` following `fare_zones.py`. Pre-load at the end of transform (before any writes), post-load at the end of load (after all writes).
+
+4. **Cypher** — put `.cypher` files under `queries/<layer>/` and load them with the `load_query()` pattern from `queries/README.md`.
 
 ---
 
