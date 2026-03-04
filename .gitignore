@@ -2,6 +2,7 @@
 .env
 
 # ── Data (downloaded at runtime, not committed) ───────────────────────────────
+data/
 data/raw/
 data/gtfs/
 
