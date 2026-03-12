@@ -47,6 +47,7 @@ _LAYER_MODULES: dict[Layer, str] = {
     Layer.SERVICE_SCHEDULE: "src.layers.service_schedule",
     Layer.FARE: "src.layers.fare",
     Layer.ACCESSIBILITY: "src.layers.accessibility",
+    Layer.INTERRUPTION: "src.layers.interruption",
 }
 
 
