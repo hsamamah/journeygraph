@@ -81,12 +81,13 @@ def fare_products_df() -> pd.DataFrame:
 
 
 @pytest.fixture
-def gtfs_data(stops_df, fare_leg_rules_df, fare_media_df, fare_products_df) -> dict:
+def gtfs_data(stops_df, fare_leg_rules_df, fare_media_df, fare_products_df, feed_info_df) -> dict:
     return {
         "stops":           stops_df,
         "fare_leg_rules":  fare_leg_rules_df,
         "fare_media":      fare_media_df,
         "fare_products":   fare_products_df,
+        "feed_info":       feed_info_df,
     }
 
 

@@ -22,7 +22,7 @@ from src.common.logger import get_logger
 
 log = get_logger(__name__)
 
-REQUIRED = {"stops", "fare_media", "fare_products", "fare_leg_rules"}
+REQUIRED = {"stops", "fare_media", "fare_products", "fare_leg_rules", "feed_info"}
 OPTIONAL = {"fare_transfer_rules"}
 
 

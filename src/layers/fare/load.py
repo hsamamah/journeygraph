@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.common.validators.fare_zones import validate_post_load
@@ -241,6 +242,9 @@ def run(result: FareTransformResult, neo4j: Neo4jManager) -> None:
     Runs post-load validation; raises ValueError on failure.
     """
     log.info("fare load: starting")
+
+    # Shared FeedInfo node (idempotent — safe if already created by another layer)
+    ensure_feed_info(neo4j, result.feed_info)
 
     # Nodes
     _load_constraints(neo4j)
