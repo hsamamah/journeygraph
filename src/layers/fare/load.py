@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.common.cross_layer import check_target_nodes
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
@@ -255,9 +256,16 @@ def run(result: FareTransformResult, neo4j: Neo4jManager) -> None:
     _load_fare_transfer_rules(neo4j, result)
 
     # Relationships — physical layer nodes must exist
-    _load_station_in_zone(neo4j, result)
-    _load_gate_in_zone(neo4j, result)
-    _load_gate_belongs_to(neo4j, result)
+    has_stations = check_target_nodes(neo4j, "Station", "fare → physical")
+    has_faregates = check_target_nodes(neo4j, "FareGate", "fare → physical")
+
+    if has_stations:
+        _load_station_in_zone(neo4j, result)
+    if has_faregates:
+        _load_gate_in_zone(neo4j, result)
+        _load_gate_belongs_to(neo4j, result)
+
+    # Internal relationships (fare layer nodes only)
     _load_media_product_rels(neo4j, result)
     _load_leg_rule_rels(neo4j, result)
     _load_transfer_rule_rels(neo4j, result)

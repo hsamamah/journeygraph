@@ -65,9 +65,28 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="LAYER",
         default=[l.value for l in Layer],
         help=(
-            "Layers to run. Dependencies are resolved automatically. "
+            "Layers to run. Default behavior: runs only the specified layers "
+            "(isolated mode). Use --with-deps to include upstream dependencies, "
+            "--cascade to include downstream dependents. "
             f"Valid: {[l.value for l in Layer]}. "
             "Default: all layers."
+        ),
+    )
+    parser.add_argument(
+        "--with-deps",
+        action="store_true",
+        help=(
+            "Include upstream dependencies. "
+            "E.g. --layers fare --with-deps runs [physical, fare]."
+        ),
+    )
+    parser.add_argument(
+        "--cascade",
+        action="store_true",
+        help=(
+            "Include downstream dependents. "
+            "E.g. --layers service_schedule --cascade runs "
+            "[service_schedule, interruption]."
         ),
     )
     parser.add_argument(
@@ -99,17 +118,41 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── Execution ─────────────────────────────────────────────────────────────────
 
 
-def _execution_plan(requested: list[Layer]) -> list[Layer]:
+def _execution_plan(
+    requested: list[Layer],
+    *,
+    with_deps: bool = False,
+    cascade: bool = False,
+) -> list[Layer]:
     """Resolve requested layers to an ordered execution plan."""
-    return resolve_layers(requested)
+    return resolve_layers(requested, with_deps=with_deps, cascade=cascade)
 
 
-def _print_plan(plan: list[Layer], requested: list[Layer]) -> None:
+def _print_plan(
+    plan: list[Layer],
+    requested: list[Layer],
+    *,
+    with_deps: bool = False,
+    cascade: bool = False,
+) -> None:
     """Log the resolved execution plan clearly."""
-    auto_added = [l for l in plan if l not in requested]
-    log.info("Resolved execution plan (%d layers):", len(plan))
+    mode_parts = []
+    if with_deps:
+        mode_parts.append("with-deps")
+    if cascade:
+        mode_parts.append("cascade")
+    mode = f" ({', '.join(mode_parts)})" if mode_parts else " (isolated)"
+
+    log.info("Resolved execution plan%s — %d layer(s):", mode, len(plan))
     for i, layer in enumerate(plan, 1):
-        suffix = " ← dependency auto-added" if layer in auto_added else ""
+        if layer in requested:
+            suffix = ""
+        elif with_deps:
+            suffix = " ← upstream dependency"
+        elif cascade:
+            suffix = " ← downstream dependent"
+        else:
+            suffix = ""
         log.info("  %d. %s%s", i, layer.value, suffix)
 
 
@@ -222,8 +265,12 @@ def main(argv: list[str] | None = None) -> None:
         log.info("--download-only complete — %d files available", len(data))
         return
 
-    plan = _execution_plan(requested)
-    _print_plan(plan, requested)
+    plan = _execution_plan(
+        requested, with_deps=args.with_deps, cascade=args.cascade
+    )
+    _print_plan(
+        plan, requested, with_deps=args.with_deps, cascade=args.cascade
+    )
 
     if args.dry_run:
         log.info("Dry run — exiting without executing")
