@@ -216,8 +216,12 @@ def _extract_statement(cypher: str, label_hint: str) -> str:
     """
     Extract a single UNWIND statement from a multi-statement Cypher file
     by matching the comment line containing label_hint.
+
+    Splits on the decorative separator pattern '// ── ' which precedes
+    each statement. This keeps multi-line comments (like // $rows: ...)
+    together with their UNWIND block.
     """
-    blocks = re.split(r"\n(?=//)", cypher)
+    blocks = re.split(r"\n(?=// ── )", cypher)
     for block in blocks:
         if label_hint in block:
             lines = [ln for ln in block.splitlines() if not ln.strip().startswith("//")]

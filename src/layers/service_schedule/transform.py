@@ -145,7 +145,7 @@ def _classify_service(row: dict, service_id: str) -> str:
     Returns one of: Weekday, Saturday, Sunday, Holiday, Maintenance.
     """
     sid = str(service_id)
-    if "_R" in sid or sid.endswith("R"):
+    if sid.endswith("_R"):
         return "Maintenance"
 
     flags = {c: int(row.get(c, 0) or 0) for c in DAY_COLS}
