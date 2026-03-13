@@ -29,21 +29,21 @@ from enum import Enum
 
 
 class Layer(str, Enum):
-    PHYSICAL          = "physical"
-    SERVICE_SCHEDULE  = "service_schedule"
-    FARE              = "fare"
-    ACCESSIBILITY     = "accessibility"
-    INTERRUPTION      = "interruption"
+    PHYSICAL = "physical"
+    SERVICE_SCHEDULE = "service_schedule"
+    FARE = "fare"
+    ACCESSIBILITY = "accessibility"
+    INTERRUPTION = "interruption"
 
 
 # Directed acyclic graph of layer dependencies.
 # A layer will not run until all its dependencies have completed.
 DEPENDENCIES: dict[Layer, list[Layer]] = {
-    Layer.PHYSICAL:         [],
+    Layer.PHYSICAL: [],
     Layer.SERVICE_SCHEDULE: [],
-    Layer.FARE:             [Layer.PHYSICAL],
-    Layer.ACCESSIBILITY:    [Layer.PHYSICAL],
-    Layer.INTERRUPTION:     [Layer.SERVICE_SCHEDULE, Layer.PHYSICAL],
+    Layer.FARE: [],
+    Layer.ACCESSIBILITY: [],
+    Layer.INTERRUPTION: [],
 }
 
 
@@ -121,8 +121,7 @@ def validate_layer_names(names: list[str]) -> list[Layer]:
 
     if unknown:
         raise ValueError(
-            f"Unknown layer(s): {unknown}. "
-            f"Valid options: {sorted(valid.keys())}"
+            f"Unknown layer(s): {unknown}. Valid options: {sorted(valid.keys())}"
         )
 
     return result
