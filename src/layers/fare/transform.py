@@ -43,7 +43,9 @@ PRODUCT_MAP: dict[str, tuple[str, str]] = {
     "metrorail_one_way_full_fare":    ("rail_one_way",            "Metrorail One-Way"),
 }
 
-# Timeframe group ids as they appear in GTFS
+# WMATA-specific: only these network_ids trigger zone-anchored fare rules.
+# A new rail network ID would need to be added here.
+# See CONVENTIONS.md → "Rail Network IDs"
 RAIL_NETWORKS = {"metrorail", "metrorail_shuttle"}
 
 
@@ -67,6 +69,7 @@ class FareTransformResult:
     fare_transfer_rules: pd.DataFrame        # full transfer rule rows
     station_zones: pd.DataFrame              # stop_id (STN_), zone_id
     gate_zones: pd.DataFrame                 # stop_id (_FG_), zone_id, parent_station
+    product_media_map: pd.DataFrame          # fare_product_id (logical), fare_media_id
 
     # Metadata
     feed_info: pd.DataFrame               # single row from feed_info.txt
@@ -84,24 +87,46 @@ def _logical_product(fare_product_id: str) -> tuple[str, str] | None:
     return None
 
 
-def _parse_amount(fare_product_id: str) -> float:
+def _parse_amount(fare_product_id: str, product_amount_map: dict[str, float] | None = None) -> float:
     """
-    Extract amount from fare_product_id suffix.
-    metrorail_one_way_full_fare_225 → 2.25
-    metrorail_free_fare_000         → 0.00
-    metrobus_one_way_regular_fare   → 2.25 (fixed, no suffix)
+    Extract amount from fare_product_id.
+
+    Strategy:
+      1. Try numeric suffix (rail): metrorail_one_way_full_fare_225 → 2.25
+      2. Try product_amount_map (built from fare_products.txt amount column)
+      3. Warn and return 0.0 if neither works
     """
     pid = clean_str(fare_product_id)
     match = re.search(r"_(\d+)$", pid)
     if match:
         return int(match.group(1)) / 100
-    # Bus fares have no amount suffix — amount is fixed per product type
-    bus_amounts = {
-        "metrobus_one_way_regular_fare": 2.25,
-        "metrobus_one_way_express_fare": 4.25,
-        "metrobus_transfer_discount":    0.50,
-    }
-    return bus_amounts.get(pid, 0.0)
+
+    # Fallback: lookup from fare_products.txt (bus fares have no suffix)
+    if product_amount_map and pid in product_amount_map:
+        return product_amount_map[pid]
+
+    log.warning(
+        "fare transform: could not determine amount for fare_product_id '%s' "
+        "— no numeric suffix and not found in fare_products.txt. Defaulting to 0.0",
+        pid,
+    )
+    return 0.0
+
+
+def _build_product_amount_map(fare_products_raw: pd.DataFrame) -> dict[str, float]:
+    """
+    Build a lookup of fare_product_id → amount from fare_products.txt.
+    Used as fallback for products whose ID doesn't encode the amount.
+    """
+    if "amount" not in fare_products_raw.columns:
+        return {}
+    result: dict[str, float] = {}
+    for _, row in fare_products_raw.iterrows():
+        pid = clean_str(str(row.get("fare_product_id", "")))
+        amt = safe_float(row.get("amount"))
+        if pid and amt is not None:
+            result[pid] = amt
+    return result
 
 
 # ── Transform functions ───────────────────────────────────────────────────────
@@ -122,6 +147,9 @@ def _transform_fare_zones(stops: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
         .reset_index(drop=True)
     )
 
+    # WMATA-specific: station stop_ids use STN_ prefix, faregate stop_ids
+    # contain _FG_ as substring (e.g. NODE_A01_FG_PAID).
+    # See CONVENTIONS.md → "Stop ID Prefix Conventions"
     station_zones = (
         zoned[zoned["stop_id"].str.startswith("STN_", na=False)][["stop_id", "zone_id"]]
         .reset_index(drop=True)
@@ -178,6 +206,7 @@ def _transform_fare_products(fare_products_raw: pd.DataFrame) -> tuple[pd.DataFr
 def _transform_fare_leg_rules(
     fare_leg_rules_raw: pd.DataFrame,
     stop_zone_map: dict[str, str],
+    product_amount_map: dict[str, float],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Returns:
@@ -209,11 +238,11 @@ def _transform_fare_leg_rules(
         mapping = _logical_product(fare_product_id)
         if mapping:
             logical_id, _ = mapping
-            amount = _parse_amount(fare_product_id)
+            amount = _parse_amount(fare_product_id, product_amount_map)
             applies_rows.append({
                 "leg_group_id":   leg_group_id,
                 "fare_product_id": logical_id,
-                "timeframe":       timeframe,
+                "timeframe":       timeframe or "NULL",
                 "amount":          amount,
                 "currency":        "USD",
             })
@@ -300,8 +329,9 @@ def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
     fare_zones, station_zones, gate_zones = _transform_fare_zones(stops)
     fare_media = _transform_fare_media(fare_media_raw)
     fare_products, product_media_map = _transform_fare_products(fare_products_raw)
+    product_amount_map = _build_product_amount_map(fare_products_raw)
     leg_rules, applies_product, from_area, to_area = _transform_fare_leg_rules(
-        fare_leg_raw, stop_zone_map
+        fare_leg_raw, stop_zone_map, product_amount_map
     )
     transfer_rules = _transform_fare_transfer_rules(transfer_raw)
 
@@ -343,6 +373,7 @@ def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
         fare_transfer_rules=transfer_rules,
         station_zones=station_zones,
         gate_zones=gate_zones,
+        product_media_map=product_media_map,
         feed_info=feed_info_raw,
         stats=stats,
     )

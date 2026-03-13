@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.common.cross_layer import check_target_nodes
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
@@ -174,8 +175,19 @@ def _load_internal_rels(neo4j: Neo4jManager, result: ServiceTransformResult) -> 
     # Agency ↔ Route (both directions from same data)
     all_routes = pd.concat([result.routes_bus, result.routes_rail], ignore_index=True)
     if "agency_id" not in all_routes.columns:
-        # WMATA has a single agency — pull from agency DataFrame
-        agency_id = result.agency.iloc[0]["agency_id"] if not result.agency.empty else "1"
+        if not result.agency.empty:
+            agency_id = result.agency.iloc[0]["agency_id"]
+            log.warning(
+                "service load: routes missing agency_id column — "
+                "using agency_id='%s' from agency.txt for all routes",
+                agency_id,
+            )
+        else:
+            log.warning(
+                "service load: routes missing agency_id and agency.txt is empty — "
+                "skipping Agency ↔ Route relationships"
+            )
+            return
         all_routes["agency_id"] = agency_id
 
     agency_route_rows = _df_to_rows(all_routes[["agency_id", "route_id"]].drop_duplicates())
@@ -284,12 +296,16 @@ def _load_from_feed_rels(neo4j: Neo4jManager, result: ServiceTransformResult) ->
 def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) -> None:
     """
     Load relationships that target Physical layer nodes.
-    Silently skips rows where the target node doesn't exist (MATCH fails).
+    Warns and skips when target node labels are missing from the graph.
     """
     rel_cypher = _load_query("relationships.cypher")
 
+    has_stations = check_target_nodes(neo4j, "Station", "service → physical")
+    has_busstops = check_target_nodes(neo4j, "BusStop", "service → physical")
+    has_platforms = check_target_nodes(neo4j, "Platform", "service → physical")
+
     # Route -[:SERVES]-> Station
-    if not result.route_serves_station.empty:
+    if has_stations and not result.route_serves_station.empty:
         rows = _df_to_rows(result.route_serves_station)
         log.info("service load: Route -[:SERVES]-> Station (%d rels)", len(rows))
         neo4j.batch_write(
@@ -300,7 +316,7 @@ def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) 
         )
 
     # Route -[:SERVES]-> BusStop
-    if not result.route_serves_busstop.empty:
+    if has_busstops and not result.route_serves_busstop.empty:
         rows = _df_to_rows(result.route_serves_busstop)
         log.info("service load: Route -[:SERVES]-> BusStop (%d rels)", len(rows))
         neo4j.batch_write(
@@ -310,11 +326,14 @@ def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) 
             label="SERVES BusStop",
         )
 
+    # WMATA-specific: PF_ prefix identifies Platform stop_ids (rail).
+    # Everything else is a BusStop. See CONVENTIONS.md → "Stop ID Prefix Conventions"
+
     # RoutePattern -[:STOPS_AT]-> Platform
     rail_stops = result.pattern_stops_at[
         result.pattern_stops_at["stop_id"].str.startswith("PF_", na=False)
     ]
-    if not rail_stops.empty:
+    if has_platforms and not rail_stops.empty:
         rows = _df_to_rows(rail_stops)
         log.info("service load: RoutePattern -[:STOPS_AT]-> Platform (%d rels)", len(rows))
         neo4j.batch_write(
@@ -328,7 +347,7 @@ def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) 
     bus_stops = result.pattern_stops_at[
         ~result.pattern_stops_at["stop_id"].str.startswith("PF_", na=False)
     ]
-    if not bus_stops.empty:
+    if has_busstops and not bus_stops.empty:
         rows = _df_to_rows(bus_stops)
         log.info("service load: RoutePattern -[:STOPS_AT]-> BusStop (%d rels)", len(rows))
         neo4j.batch_write(
@@ -339,7 +358,7 @@ def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) 
         )
 
     # Trip -[:SCHEDULED_AT]-> Platform (rail) — batched
-    if not result.scheduled_at_rail.empty:
+    if has_platforms and not result.scheduled_at_rail.empty:
         rows = _df_to_rows(result.scheduled_at_rail)
         log.info("service load: Trip -[:SCHEDULED_AT]-> Platform (%d rels)", len(rows))
         neo4j.batch_write(
@@ -350,7 +369,7 @@ def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) 
         )
 
     # Trip -[:SCHEDULED_AT]-> BusStop (bus) — batched
-    if not result.scheduled_at_bus.empty:
+    if has_busstops and not result.scheduled_at_bus.empty:
         rows = _df_to_rows(result.scheduled_at_bus)
         log.info("service load: Trip -[:SCHEDULED_AT]-> BusStop (%d rels)", len(rows))
         neo4j.batch_write(

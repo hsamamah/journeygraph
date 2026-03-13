@@ -72,11 +72,11 @@ def fare_media_df() -> pd.DataFrame:
 @pytest.fixture
 def fare_products_df() -> pd.DataFrame:
     return pd.DataFrame([
-        dict(fare_product_id="metrobus_one_way_regular_fare",  fare_product_name="Metrobus Regular", fare_media_id="smartrip_card"),
-        dict(fare_product_id="metrobus_one_way_express_fare",  fare_product_name="Metrobus Express", fare_media_id="smartrip_card"),
-        dict(fare_product_id="metrorail_free_fare_000",        fare_product_name="Metrorail Free",   fare_media_id="smartrip_card"),
-        dict(fare_product_id="metrorail_one_way_full_fare_225",fare_product_name="Metrorail One-Way",fare_media_id="smartrip_card"),
-        dict(fare_product_id="metrorail_one_way_full_fare_200",fare_product_name="Metrorail One-Way",fare_media_id="tap_ride_go"),
+        dict(fare_product_id="metrobus_one_way_regular_fare",  fare_product_name="Metrobus Regular", fare_media_id="smartrip_card", amount=2.25, currency="USD"),
+        dict(fare_product_id="metrobus_one_way_express_fare",  fare_product_name="Metrobus Express", fare_media_id="smartrip_card", amount=4.25, currency="USD"),
+        dict(fare_product_id="metrorail_free_fare_000",        fare_product_name="Metrorail Free",   fare_media_id="smartrip_card", amount=0.00, currency="USD"),
+        dict(fare_product_id="metrorail_one_way_full_fare_225",fare_product_name="Metrorail One-Way",fare_media_id="smartrip_card", amount=2.25, currency="USD"),
+        dict(fare_product_id="metrorail_one_way_full_fare_200",fare_product_name="Metrorail One-Way",fare_media_id="tap_ride_go",   amount=2.00, currency="USD"),
     ])
 
 

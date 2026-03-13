@@ -37,7 +37,11 @@ log = get_logger(__name__)
 
 DAY_COLS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
-ROUTE_TYPE_MODE = {1: "rail", 3: "bus"}  # GTFS route_type → mode string
+# WMATA-specific: only route_type 1 (rail) and 3 (bus) are used.
+# GTFS defines additional types (0=tram, 2=rail, 4=ferry, etc.)
+# which are not mapped. Unknown types warn and default to "bus".
+# See CONVENTIONS.md → "Route Type Mapping"
+ROUTE_TYPE_MODE = {1: "rail", 3: "bus"}
 
 
 # ── Result container ─────────────────────────────────────────────────────────
@@ -71,6 +75,10 @@ class ServiceTransformResult:
 
 
 # ── US Federal Holiday lookup ────────────────────────────────────────────────
+# WMATA-specific: 11 US federal holidays with observed-date rules.
+# Does not include DC-specific holidays (Emancipation Day, Inauguration Day).
+# holiday_name is attached to the ACTIVE_ON relationship, not the node.
+# See CONVENTIONS.md → "US Federal Holiday Detection"
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -145,6 +153,9 @@ def _classify_service(row: dict, service_id: str) -> str:
     Returns one of: Weekday, Saturday, Sunday, Holiday, Maintenance.
     """
     sid = str(service_id)
+    # WMATA-specific: service_ids ending with _R denote maintenance windows
+    # (e.g. WK_R, SAT_R). Not a GTFS standard — WMATA naming convention.
+    # See CONVENTIONS.md → "Maintenance Service Detection"
     if sid.endswith("_R"):
         return "Maintenance"
 
@@ -164,7 +175,12 @@ def _classify_service(row: dict, service_id: str) -> str:
     if sun and weekday_count == 0 and not sat:
         return "Sunday"
 
-    # Mixed patterns (e.g. Mon-Sat) — default to Weekday
+    # Mixed patterns (e.g. Mon-Sat) — default to Weekday with warning
+    log.warning(
+        "service transform: service_id '%s' has mixed day flags "
+        "(weekday=%d, sat=%d, sun=%d) — defaulting to 'Weekday'",
+        sid, weekday_count, sat, sun,
+    )
     return "Weekday"
 
 
@@ -210,7 +226,18 @@ def _transform_routes(routes_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     df = routes_raw[present].copy()
 
     df["route_type"] = df["route_type"].apply(safe_int)
-    df["mode"] = df["route_type"].map(ROUTE_TYPE_MODE).fillna("bus")
+    df["mode"] = df["route_type"].map(ROUTE_TYPE_MODE)
+
+    # Warn on unknown route_types before defaulting to "bus"
+    unknown_types = df[df["mode"].isna()]["route_type"].unique()
+    if len(unknown_types) > 0:
+        log.warning(
+            "service transform: unknown route_type(s) %s not in %s — "
+            "defaulting to mode='bus'. If these are not bus routes, "
+            "add them to ROUTE_TYPE_MODE.",
+            unknown_types.tolist(), ROUTE_TYPE_MODE,
+        )
+    df["mode"] = df["mode"].fillna("bus")
 
     bus = df[df["mode"] == "bus"].reset_index(drop=True)
     rail = df[df["mode"] == "rail"].reset_index(drop=True)
@@ -442,6 +469,10 @@ def _derive_route_serves(
     # Unique (route_id, stop_id, mode)
     serves = st_route[["route_id", "stop_id", "mode"]].drop_duplicates()
 
+    # WMATA-specific: rail stop_times reference PF_ (Platform) stop_ids,
+    # which map to STN_ (Station) via parent_station. Bus stop_ids are numeric.
+    # See CONVENTIONS.md → "Stop ID Prefix Conventions"
+
     # Rail: PF_ stops → parent station (STN_)
     parent_map = (
         stops_raw[stops_raw["parent_station"].notna() & (stops_raw["parent_station"] != "")]
@@ -495,8 +526,15 @@ def run(raw: dict[str, pd.DataFrame]) -> ServiceTransformResult:
     log.info("service transform: feed_version = %s", feed_version)
 
     # Feed date range for calendar generation
-    feed_start = _parse_gtfs_date(feed_info.iloc[0].get("feed_start_date")) or date(2025, 12, 14)
-    feed_end = _parse_gtfs_date(feed_info.iloc[0].get("feed_end_date")) or date(2026, 6, 13)
+    feed_start = _parse_gtfs_date(feed_info.iloc[0].get("feed_start_date"))
+    feed_end = _parse_gtfs_date(feed_info.iloc[0].get("feed_end_date"))
+    if not feed_start or not feed_end:
+        raise ValueError(
+            f"feed_info.txt missing feed_start_date or feed_end_date. "
+            f"Got start={feed_info.iloc[0].get('feed_start_date')}, "
+            f"end={feed_info.iloc[0].get('feed_end_date')}. "
+            f"Cannot resolve calendar without feed date range."
+        )
 
     # ── Nodes ────────────────────────────────────────────────────────────────
     agency = _transform_agency(agency_raw)
