@@ -90,6 +90,165 @@ def gtfs_data(stops_df, fare_leg_rules_df, fare_media_df, fare_products_df) -> d
     }
 
 
+# ── Service & Schedule layer fixtures ─────────────────────────────────────────
+
+
+@pytest.fixture
+def agency_df() -> pd.DataFrame:
+    return pd.DataFrame([
+        dict(agency_id="1", agency_name="WMATA", agency_url="https://wmata.com",
+             agency_timezone="America/New_York", agency_lang="en",
+             agency_phone="", agency_fare_url="", agency_email=""),
+    ])
+
+
+@pytest.fixture
+def routes_df() -> pd.DataFrame:
+    """Two rail lines + two bus routes."""
+    return pd.DataFrame([
+        dict(route_id="RED", route_short_name="Red", route_long_name="Red Line",
+             route_type=1, route_color="BF0D3E", route_text_color="",
+             route_desc="", route_url="", route_sort_order=""),
+        dict(route_id="BLUE", route_short_name="Blue", route_long_name="Blue Line",
+             route_type=1, route_color="009CDE", route_text_color="",
+             route_desc="", route_url="", route_sort_order=""),
+        dict(route_id="70", route_short_name="70", route_long_name="Georgia Ave",
+             route_type=3, route_color="", route_text_color="",
+             route_desc="", route_url="", route_sort_order=""),
+        dict(route_id="S2", route_short_name="S2", route_long_name="16th Street",
+             route_type=3, route_color="", route_text_color="",
+             route_desc="", route_url="", route_sort_order=""),
+    ])
+
+
+@pytest.fixture
+def trips_df() -> pd.DataFrame:
+    """
+    Trips covering:
+      - Rail weekday trip
+      - Bus weekday trip
+      - Rail Saturday trip
+      - Rail maintenance trip (_R suffix service)
+    """
+    return pd.DataFrame([
+        dict(trip_id="T_RED_1", route_id="RED", service_id="WK_RAIL",
+             shape_id="SH_RED_0", direction_id="0", trip_headsign="Glenmont",
+             trip_short_name="", block_id="B1"),
+        dict(trip_id="T_70_1", route_id="70", service_id="WK_BUS",
+             shape_id="SH_70_0", direction_id="0", trip_headsign="Silver Spring",
+             trip_short_name="", block_id="B2"),
+        dict(trip_id="T_BLUE_SAT", route_id="BLUE", service_id="SAT",
+             shape_id="SH_BLUE_0", direction_id="0", trip_headsign="Franconia",
+             trip_short_name="", block_id="B3"),
+        dict(trip_id="T_RED_MAINT", route_id="RED", service_id="WK_R",
+             shape_id="SH_RED_0", direction_id="1", trip_headsign="Shady Grove",
+             trip_short_name="", block_id="B4"),
+    ])
+
+
+@pytest.fixture
+def stop_times_df() -> pd.DataFrame:
+    """Minimal stop_times — 2 stops per trip, rail + bus."""
+    return pd.DataFrame([
+        # Rail trip T_RED_1
+        dict(trip_id="T_RED_1", stop_id="PF_A01_1", arrival_time="06:00:00",
+             departure_time="06:00:00", stop_sequence=1, shape_dist_traveled=0.0, timepoint=None),
+        dict(trip_id="T_RED_1", stop_id="PF_A02_1", arrival_time="06:05:00",
+             departure_time="06:05:00", stop_sequence=2, shape_dist_traveled=1.2, timepoint=None),
+        # Bus trip T_70_1
+        dict(trip_id="T_70_1", stop_id="10001", arrival_time="07:00:00",
+             departure_time="07:00:00", stop_sequence=1, shape_dist_traveled=None, timepoint=1),
+        dict(trip_id="T_70_1", stop_id="10002", arrival_time="07:10:00",
+             departure_time="07:10:00", stop_sequence=2, shape_dist_traveled=None, timepoint=1),
+        # Rail Saturday trip
+        dict(trip_id="T_BLUE_SAT", stop_id="PF_C01_1", arrival_time="09:00:00",
+             departure_time="09:00:00", stop_sequence=1, shape_dist_traveled=0.0, timepoint=None),
+        dict(trip_id="T_BLUE_SAT", stop_id="PF_C02_1", arrival_time="09:08:00",
+             departure_time="09:08:00", stop_sequence=2, shape_dist_traveled=2.5, timepoint=None),
+        # Rail maintenance trip
+        dict(trip_id="T_RED_MAINT", stop_id="PF_A02_1", arrival_time="23:00:00",
+             departure_time="23:00:00", stop_sequence=1, shape_dist_traveled=0.0, timepoint=None),
+        dict(trip_id="T_RED_MAINT", stop_id="PF_A01_1", arrival_time="23:05:00",
+             departure_time="23:05:00", stop_sequence=2, shape_dist_traveled=1.2, timepoint=None),
+    ])
+
+
+@pytest.fixture
+def calendar_df() -> pd.DataFrame:
+    """
+    Three service patterns:
+      WK_RAIL  — Mon-Fri rail
+      WK_BUS   — Mon-Fri bus
+      SAT      — Saturday only
+    Note: WK_R (maintenance) runs via calendar_dates only, not in calendar.txt.
+    """
+    return pd.DataFrame([
+        dict(service_id="WK_RAIL", monday=1, tuesday=1, wednesday=1, thursday=1,
+             friday=1, saturday=0, sunday=0, start_date="20260101", end_date="20260110"),
+        dict(service_id="WK_BUS", monday=1, tuesday=1, wednesday=1, thursday=1,
+             friday=1, saturday=0, sunday=0, start_date="20260101", end_date="20260110"),
+        dict(service_id="SAT", monday=0, tuesday=0, wednesday=0, thursday=0,
+             friday=0, saturday=1, sunday=0, start_date="20260101", end_date="20260110"),
+    ])
+
+
+@pytest.fixture
+def calendar_dates_df() -> pd.DataFrame:
+    """
+    Exceptions:
+      - Remove New Year's Day (2026-01-01) from WK_RAIL  (type=2)
+      - Add maintenance window WK_R on 2026-01-04 (type=1, calendar_dates-only)
+    """
+    return pd.DataFrame([
+        dict(service_id="WK_RAIL", date="20260101", exception_type=2),
+        dict(service_id="WK_R", date="20260104", exception_type=1),
+    ])
+
+
+@pytest.fixture
+def service_stops_df() -> pd.DataFrame:
+    """Stops for service layer tests — stations, platforms, bus stops."""
+    return pd.DataFrame([
+        dict(stop_id="STN_A01", stop_name="Metro Center", parent_station="", zone_id="10"),
+        dict(stop_id="STN_A02", stop_name="Farragut North", parent_station="", zone_id="3"),
+        dict(stop_id="STN_C01", stop_name="Arlington Cemetery", parent_station="", zone_id="15"),
+        dict(stop_id="STN_C02", stop_name="Addison Road", parent_station="", zone_id="20"),
+        dict(stop_id="PF_A01_1", stop_name="MC Platform 1", parent_station="STN_A01", zone_id=""),
+        dict(stop_id="PF_A02_1", stop_name="FN Platform 1", parent_station="STN_A02", zone_id=""),
+        dict(stop_id="PF_C01_1", stop_name="AC Platform 1", parent_station="STN_C01", zone_id=""),
+        dict(stop_id="PF_C02_1", stop_name="AR Platform 1", parent_station="STN_C02", zone_id=""),
+        dict(stop_id="10001", stop_name="Bus Stop 1", parent_station="", zone_id=""),
+        dict(stop_id="10002", stop_name="Bus Stop 2", parent_station="", zone_id=""),
+    ])
+
+
+@pytest.fixture
+def feed_info_df() -> pd.DataFrame:
+    return pd.DataFrame([dict(
+        feed_publisher_name="WMATA", feed_publisher_url="https://wmata.com",
+        feed_lang="en", feed_start_date="20251214", feed_end_date="20260613",
+        feed_version="S1000246", feed_contact_email="", feed_contact_url="",
+    )])
+
+
+@pytest.fixture
+def service_gtfs_data(
+    agency_df, routes_df, trips_df, stop_times_df,
+    calendar_df, calendar_dates_df, service_stops_df, feed_info_df,
+) -> dict:
+    """Full gtfs_data dict for service layer tests."""
+    return {
+        "agency": agency_df,
+        "routes": routes_df,
+        "trips": trips_df,
+        "stop_times": stop_times_df,
+        "calendar": calendar_df,
+        "calendar_dates": calendar_dates_df,
+        "stops": service_stops_df,
+        "feed_info": feed_info_df,
+    }
+
+
 # ── Real GTFS fixtures (skip if files not present) ────────────────────────────
 
 def _gtfs_path(name: str) -> Path:
