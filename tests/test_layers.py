@@ -52,6 +52,14 @@ def test_service_schedule_has_no_deps():
     assert result == [Layer.SERVICE_SCHEDULE]
 
 
+def test_interruption_pulls_in_service_schedule_and_physical():
+    result = resolve_layers([Layer.INTERRUPTION])
+    assert Layer.SERVICE_SCHEDULE in result
+    assert Layer.PHYSICAL in result
+    assert result.index(Layer.SERVICE_SCHEDULE) < result.index(Layer.INTERRUPTION)
+    assert result.index(Layer.PHYSICAL) < result.index(Layer.INTERRUPTION)
+
+
 def test_order_is_stable_regardless_of_input_order():
     order_a = resolve_layers([Layer.FARE, Layer.PHYSICAL])
     order_b = resolve_layers([Layer.PHYSICAL, Layer.FARE])
