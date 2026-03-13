@@ -47,6 +47,7 @@ _LAYER_MODULES: dict[Layer, str] = {
     Layer.SERVICE_SCHEDULE: "src.layers.service_schedule",
     Layer.FARE: "src.layers.fare",
     Layer.ACCESSIBILITY: "src.layers.accessibility",
+    Layer.INTERRUPTION: "src.layers.interruption",
 }
 
 
@@ -120,7 +121,7 @@ def _execute_layer(
 ) -> None:
     """
     Execute a single layer, importing its module lazily.
-    Accessibility is a special case — it also receives a WMATAClient instance.
+    Accessibility and Interruption layers also receive a WMATAClient instance.
     """
     import importlib
 
@@ -135,7 +136,7 @@ def _execute_layer(
 
     runner = module.run
 
-    if layer == Layer.ACCESSIBILITY:
+    if layer in (Layer.ACCESSIBILITY, Layer.INTERRUPTION):
         from src.ingest.api_client import WMATAClient
 
         api_client = WMATAClient(api_key=config.wmata_api_key)

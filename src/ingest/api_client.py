@@ -90,23 +90,47 @@ class WMATAClient:
 
     # ── GTFS-RT Protobuf endpoints ────────────────────────────────────────────
 
-    def get_gtfs_rt_alerts(self) -> gtfs_realtime_pb2.FeedMessage:
+    def get_gtfs_rt_alerts(self, source: str = "rail") -> gtfs_realtime_pb2.FeedMessage:
         """
         GTFS-RT service alerts feed (Protobuf).
-        Callers can iterate feed.entity for individual alerts.
+        source: 'rail' or 'bus'
         """
-        feed = self._get_protobuf("/rail-gtfsrt-alerts.pb")
-        logger.info(f"Fetched GTFS-RT alerts — {len(feed.entity)} entities")
+        path = f"/{source}-gtfsrt-alerts.pb"
+        feed = self._get_protobuf(path)
+        logger.info(f"Fetched GTFS-RT {source} alerts — {len(feed.entity)} entities")
         return feed
 
-    def get_gtfs_rt_trip_updates(self) -> gtfs_realtime_pb2.FeedMessage:
+    def get_gtfs_rt_trip_updates(self, source: str = "rail") -> gtfs_realtime_pb2.FeedMessage:
         """
         GTFS-RT trip updates feed (Protobuf).
-        Contains real-time arrival/departure predictions.
+        source: 'rail' or 'bus'
         """
-        feed = self._get_protobuf("/rail-gtfsrt-tripupdates.pb")
-        logger.info(f"Fetched GTFS-RT trip updates — {len(feed.entity)} entities")
+        path = f"/{source}-gtfsrt-tripupdates.pb"
+        feed = self._get_protobuf(path)
+        logger.info(f"Fetched GTFS-RT {source} trip updates — {len(feed.entity)} entities")
         return feed
+
+    def get_all_trip_updates(self) -> list[tuple[gtfs_realtime_pb2.FeedMessage, str]]:
+        """Fetch both rail and bus trip update feeds. Returns [(feed, source), ...]."""
+        results = []
+        for source in ("rail", "bus"):
+            try:
+                feed = self.get_gtfs_rt_trip_updates(source=source)
+                results.append((feed, f"gtfs_rt_{source}"))
+            except Exception as exc:
+                logger.warning(f"Failed to fetch {source} trip updates: {exc}")
+        return results
+
+    def get_all_alerts(self) -> list[tuple[gtfs_realtime_pb2.FeedMessage, str]]:
+        """Fetch both rail and bus alert feeds. Returns [(feed, source), ...]."""
+        results = []
+        for source in ("rail", "bus"):
+            try:
+                feed = self.get_gtfs_rt_alerts(source=source)
+                results.append((feed, f"gtfs_rt_{source}"))
+            except Exception as exc:
+                logger.warning(f"Failed to fetch {source} alerts: {exc}")
+        return results
 
     def get_gtfs_rt_vehicle_positions(self) -> gtfs_realtime_pb2.FeedMessage:
         """

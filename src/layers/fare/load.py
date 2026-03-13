@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.common.validators.fare_zones import validate_post_load
@@ -216,8 +217,12 @@ def _extract_statement(cypher: str, label_hint: str) -> str:
     """
     Extract a single UNWIND statement from a multi-statement Cypher file
     by matching the comment line containing label_hint.
+
+    Splits on the decorative separator pattern '// ── ' which precedes
+    each statement. This keeps multi-line comments (like // $rows: ...)
+    together with their UNWIND block.
     """
-    blocks = re.split(r"\n(?=//)", cypher)
+    blocks = re.split(r"\n(?=// ── )", cypher)
     for block in blocks:
         if label_hint in block:
             lines = [ln for ln in block.splitlines() if not ln.strip().startswith("//")]
@@ -237,6 +242,9 @@ def run(result: FareTransformResult, neo4j: Neo4jManager) -> None:
     Runs post-load validation; raises ValueError on failure.
     """
     log.info("fare load: starting")
+
+    # Shared FeedInfo node (idempotent — safe if already created by another layer)
+    ensure_feed_info(neo4j, result.feed_info)
 
     # Nodes
     _load_constraints(neo4j)

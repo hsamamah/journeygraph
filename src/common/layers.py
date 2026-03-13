@@ -33,6 +33,7 @@ class Layer(str, Enum):
     SERVICE_SCHEDULE  = "service_schedule"
     FARE              = "fare"
     ACCESSIBILITY     = "accessibility"
+    INTERRUPTION      = "interruption"
 
 
 # Directed acyclic graph of layer dependencies.
@@ -42,6 +43,7 @@ DEPENDENCIES: dict[Layer, list[Layer]] = {
     Layer.SERVICE_SCHEDULE: [],
     Layer.FARE:             [Layer.PHYSICAL],
     Layer.ACCESSIBILITY:    [Layer.PHYSICAL],
+    Layer.INTERRUPTION:     [Layer.SERVICE_SCHEDULE, Layer.PHYSICAL],
 }
 
 

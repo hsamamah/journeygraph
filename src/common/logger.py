@@ -7,6 +7,7 @@ All modules should call get_logger(__name__) at the top.
 
 import logging
 import sys
+
 from src.common.paths import LOG_DIR
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -14,6 +15,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
+    logger.propagate = False
 
     # Avoid adding duplicate handlers if get_logger is called multiple times
     if logger.handlers:

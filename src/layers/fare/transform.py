@@ -69,6 +69,7 @@ class FareTransformResult:
     gate_zones: pd.DataFrame                 # stop_id (_FG_), zone_id, parent_station
 
     # Metadata
+    feed_info: pd.DataFrame               # single row from feed_info.txt
     stats: dict[str, int] = field(default_factory=dict)
 
 
@@ -290,6 +291,7 @@ def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
     fare_products_raw = raw["fare_products"]
     fare_leg_raw    = raw["fare_leg_rules"]
     transfer_raw    = raw.get("fare_transfer_rules")
+    feed_info_raw   = raw["feed_info"]
 
     # Build stop → zone lookup used by leg rule transform
     zoned = stops[stops["zone_id"].notna() & (stops["zone_id"].astype(str) != "")]
@@ -341,5 +343,6 @@ def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
         fare_transfer_rules=transfer_rules,
         station_zones=station_zones,
         gate_zones=gate_zones,
+        feed_info=feed_info_raw,
         stats=stats,
     )
