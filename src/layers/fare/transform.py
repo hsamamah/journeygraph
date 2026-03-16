@@ -21,8 +21,8 @@ Key design decisions applied here:
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
+import re
 
 import pandas as pd
 
@@ -36,11 +36,14 @@ log = get_logger(__name__)
 # Maps fare_product_id prefix patterns → stable logical product id used in graph
 PRODUCT_MAP: dict[str, tuple[str, str]] = {
     # pattern                          (logical_id,               display_name)
-    "metrobus_one_way_regular_fare":  ("bus_regular",             "Metrobus Regular"),
-    "metrobus_one_way_express_fare":  ("bus_express",             "Metrobus Express"),
-    "metrobus_transfer_discount":     ("bus_transfer_discount",   "Metrobus Transfer Discount"),
-    "metrorail_free_fare":            ("rail_free",               "Metrorail Free"),
-    "metrorail_one_way_full_fare":    ("rail_one_way",            "Metrorail One-Way"),
+    "metrobus_one_way_regular_fare": ("bus_regular", "Metrobus Regular"),
+    "metrobus_one_way_express_fare": ("bus_express", "Metrobus Express"),
+    "metrobus_transfer_discount": (
+        "bus_transfer_discount",
+        "Metrobus Transfer Discount",
+    ),
+    "metrorail_free_fare": ("rail_free", "Metrorail Free"),
+    "metrorail_one_way_full_fare": ("rail_one_way", "Metrorail One-Way"),
 }
 
 # WMATA-specific: only these network_ids trigger zone-anchored fare rules.
@@ -51,32 +54,34 @@ RAIL_NETWORKS = {"metrorail", "metrorail_shuttle"}
 
 # ── Result container ──────────────────────────────────────────────────────────
 
+
 @dataclass
 class FareTransformResult:
     """Clean DataFrames ready for Neo4j ingestion."""
 
     # Nodes
-    fare_zones: pd.DataFrame          # zone_id (unique, sourced from stops)
-    fare_media: pd.DataFrame          # fare_media_id, fare_media_name, fare_media_type
-    fare_products: pd.DataFrame       # fare_product_id (logical), fare_product_name
-    fare_leg_rules: pd.DataFrame      # leg_group_id, network_id
+    fare_zones: pd.DataFrame  # zone_id (unique, sourced from stops)
+    fare_media: pd.DataFrame  # fare_media_id, fare_media_name, fare_media_type
+    fare_products: pd.DataFrame  # fare_product_id (logical), fare_product_name
+    fare_leg_rules: pd.DataFrame  # leg_group_id, network_id
 
     # Relationship data (carried to load.py as DataFrame rows)
-    leg_rule_applies_product: pd.DataFrame   # leg_group_id, fare_product_id, timeframe,
-                                             # amount, currency
-    leg_rule_from_area: pd.DataFrame         # leg_group_id, zone_id  [rail only]
-    leg_rule_to_area: pd.DataFrame           # leg_group_id, zone_id  [rail only]
-    fare_transfer_rules: pd.DataFrame        # full transfer rule rows
-    station_zones: pd.DataFrame              # stop_id (STN_), zone_id
-    gate_zones: pd.DataFrame                 # stop_id (_FG_), zone_id, parent_station
-    product_media_map: pd.DataFrame          # fare_product_id (logical), fare_media_id
+    leg_rule_applies_product: pd.DataFrame  # leg_group_id, fare_product_id, timeframe,
+    # amount, currency
+    leg_rule_from_area: pd.DataFrame  # leg_group_id, zone_id  [rail only]
+    leg_rule_to_area: pd.DataFrame  # leg_group_id, zone_id  [rail only]
+    fare_transfer_rules: pd.DataFrame  # full transfer rule rows
+    station_zones: pd.DataFrame  # stop_id (STN_), zone_id
+    gate_zones: pd.DataFrame  # stop_id (_FG_), zone_id, parent_station
+    product_media_map: pd.DataFrame  # fare_product_id (logical), fare_media_id
 
     # Metadata
-    feed_info: pd.DataFrame               # single row from feed_info.txt
+    feed_info: pd.DataFrame  # single row from feed_info.txt
     stats: dict[str, int] = field(default_factory=dict)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def _logical_product(fare_product_id: str) -> tuple[str, str] | None:
     """Return (logical_id, display_name) for a raw fare_product_id, or None."""
@@ -87,7 +92,9 @@ def _logical_product(fare_product_id: str) -> tuple[str, str] | None:
     return None
 
 
-def _parse_amount(fare_product_id: str, product_amount_map: dict[str, float] | None = None) -> float:
+def _parse_amount(
+    fare_product_id: str, product_amount_map: dict[str, float] | None = None
+) -> float:
     """
     Extract amount from fare_product_id.
 
@@ -131,14 +138,19 @@ def _build_product_amount_map(fare_products_raw: pd.DataFrame) -> dict[str, floa
 
 # ── Transform functions ───────────────────────────────────────────────────────
 
-def _transform_fare_zones(stops: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+
+def _transform_fare_zones(
+    stops: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Returns:
       fare_zones    — unique zone_id values (one row per zone)
       station_zones — STN_ stops with zone_id (for Station -[:IN_ZONE]-> FareZone)
       gate_zones    — _FG_ stops with zone_id (for FareGate -[:IN_ZONE]-> FareZone)
     """
-    zoned = stops[stops["zone_id"].notna() & (stops["zone_id"].astype(str) != "")].copy()
+    zoned = stops[
+        stops["zone_id"].notna() & (stops["zone_id"].astype(str) != "")
+    ].copy()
     zoned["zone_id"] = zoned["zone_id"].astype(str).str.strip()
 
     fare_zones = (
@@ -150,26 +162,26 @@ def _transform_fare_zones(stops: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFra
     # WMATA-specific: station stop_ids use STN_ prefix, faregate stop_ids
     # contain _FG_ as substring (e.g. NODE_A01_FG_PAID).
     # See CONVENTIONS.md → "Stop ID Prefix Conventions"
-    station_zones = (
-        zoned[zoned["stop_id"].str.startswith("STN_", na=False)][["stop_id", "zone_id"]]
-        .reset_index(drop=True)
-    )
+    station_zones = zoned[zoned["stop_id"].str.startswith("STN_", na=False)][
+        ["stop_id", "zone_id"]
+    ].reset_index(drop=True)
 
-    gate_zones = (
-        zoned[zoned["stop_id"].str.contains("_FG_", na=False)][
-            ["stop_id", "zone_id", "parent_station"]
-        ]
-        .reset_index(drop=True)
-    )
+    gate_zones = zoned[zoned["stop_id"].str.contains("_FG_", na=False)][
+        ["stop_id", "zone_id", "parent_station"]
+    ].reset_index(drop=True)
 
     return fare_zones, station_zones, gate_zones
 
 
 def _transform_fare_media(fare_media_raw: pd.DataFrame) -> pd.DataFrame:
-    return fare_media_raw[["fare_media_id", "fare_media_name", "fare_media_type"]].copy()
+    return fare_media_raw[
+        ["fare_media_id", "fare_media_name", "fare_media_type"]
+    ].copy()
 
 
-def _transform_fare_products(fare_products_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _transform_fare_products(
+    fare_products_raw: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Returns:
       fare_products     — 5 logical nodes (deduplicated)
@@ -182,15 +194,20 @@ def _transform_fare_products(fare_products_raw: pd.DataFrame) -> tuple[pd.DataFr
     for _, row in fare_products_raw.iterrows():
         mapping = _logical_product(str(row.get("fare_product_id", "")))
         if not mapping:
-            log.warning("fare transform: unmapped fare_product_id '%s'", row.get("fare_product_id"))
+            log.warning(
+                "fare transform: unmapped fare_product_id '%s'",
+                row.get("fare_product_id"),
+            )
             continue
         logical_id, display_name = mapping
         seen[logical_id] = display_name
 
-        media_rows.append({
-            "fare_product_id": logical_id,
-            "fare_media_id": clean_str(str(row.get("fare_media_id", ""))),
-        })
+        media_rows.append(
+            {
+                "fare_product_id": logical_id,
+                "fare_media_id": clean_str(str(row.get("fare_media_id", ""))),
+            }
+        )
 
     fare_products = pd.DataFrame(
         [{"fare_product_id": k, "fare_product_name": v} for k, v in seen.items()]
@@ -208,72 +225,71 @@ def _transform_fare_leg_rules(
     stop_zone_map: dict[str, str],
     product_amount_map: dict[str, float],
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Returns:
-      leg_rules            — leg_group_id, network_id (node properties only)
-      applies_product      — leg_group_id, fare_product_id (logical), timeframe,
-                             amount, currency
-      from_area            — leg_group_id, zone_id  [rail only]
-      to_area              — leg_group_id, zone_id  [rail only]
-    """
-    leg_rules_seen: dict[str, str] = {}  # leg_group_id → network_id
+
+    leg_rules_seen: dict[
+        str, dict
+    ] = {}  # rule_id → {rule_id, leg_group_id, network_id}
     applies_rows: list[dict] = []
     from_rows: list[dict] = []
     to_rows: list[dict] = []
 
     for _, row in fare_leg_rules_raw.iterrows():
-        leg_group_id   = clean_str(str(row.get("leg_group_id", "")))
-        network_id     = clean_str(str(row.get("network_id", "")))
-        from_area_id   = clean_str(str(row.get("from_area_id", "")))
-        to_area_id     = clean_str(str(row.get("to_area_id", "")))
+        leg_group_id = clean_str(str(row.get("leg_group_id", "")))
+        network_id = clean_str(str(row.get("network_id", "")))
         fare_product_id = clean_str(str(row.get("fare_product_id", "")))
-        timeframe      = clean_str(str(row.get("from_timeframe_group_id", "")))
+        timeframe = clean_str(str(row.get("from_timeframe_group_id", "")))
+
+        raw_from = row.get("from_area_id")
+        raw_to = row.get("to_area_id")
+        from_area_id = (
+            "" if raw_from is None or pd.isna(raw_from) else clean_str(str(raw_from))
+        )
+        to_area_id = "" if raw_to is None or pd.isna(raw_to) else clean_str(str(raw_to))
 
         if not leg_group_id:
             continue
 
-        leg_rules_seen[leg_group_id] = network_id
+        # Composite primary key — OD pair identity
+        rule_id = f"{leg_group_id}__{from_area_id or 'NULL'}__{to_area_id or 'NULL'}"
 
-        # APPLIES_PRODUCT relationship data
+        if rule_id not in leg_rules_seen:
+            leg_rules_seen[rule_id] = {
+                "rule_id": rule_id,
+                "leg_group_id": leg_group_id,
+                "network_id": network_id,
+            }
+
+        # APPLIES_PRODUCT — one row per (rule_id, timeframe)
         mapping = _logical_product(fare_product_id)
         if mapping:
             logical_id, _ = mapping
             amount = _parse_amount(fare_product_id, product_amount_map)
-            applies_rows.append({
-                "leg_group_id":   leg_group_id,
-                "fare_product_id": logical_id,
-                "timeframe":       timeframe or "NULL",
-                "amount":          amount,
-                "currency":        "USD",
-            })
+            applies_rows.append(
+                {
+                    "rule_id": rule_id,
+                    "fare_product_id": logical_id,
+                    "timeframe": timeframe or "NULL",
+                    "amount": amount,
+                    "currency": "USD",
+                }
+            )
 
-        # FROM_AREA / TO_AREA — rail only, resolved to zone_id
-        if network_id in RAIL_NETWORKS:
+        # FROM_AREA / TO_AREA — rail only, one row per rule_id
+        if network_id in RAIL_NETWORKS and from_area_id and from_area_id != "nan":
             from_zone = stop_zone_map.get(from_area_id)
-            to_zone   = stop_zone_map.get(to_area_id)
-            if from_zone:
-                from_rows.append({"leg_group_id": leg_group_id, "zone_id": from_zone})
-            if to_zone:
-                to_rows.append({"leg_group_id": leg_group_id, "zone_id": to_zone})
+            to_zone = stop_zone_map.get(to_area_id) if to_area_id else None
 
-    leg_rules = pd.DataFrame(
-        [{"leg_group_id": k, "network_id": v} for k, v in leg_rules_seen.items()]
-    )
+            if from_zone and rule_id not in {r["rule_id"] for r in from_rows}:
+                from_rows.append({"rule_id": rule_id, "zone_id": from_zone})
+            if to_zone and rule_id not in {r["rule_id"] for r in to_rows}:
+                to_rows.append({"rule_id": rule_id, "zone_id": to_zone})
+
+    leg_rules = pd.DataFrame(list(leg_rules_seen.values()))
     applies_product = (
-        pd.DataFrame(applies_rows)
-        .drop_duplicates()
-        .reset_index(drop=True)
+        pd.DataFrame(applies_rows).drop_duplicates().reset_index(drop=True)
     )
-    from_area = (
-        pd.DataFrame(from_rows)
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
-    to_area = (
-        pd.DataFrame(to_rows)
-        .drop_duplicates()
-        .reset_index(drop=True)
-    )
+    from_area = pd.DataFrame(from_rows).reset_index(drop=True)
+    to_area = pd.DataFrame(to_rows).reset_index(drop=True)
 
     return leg_rules, applies_product, from_area, to_area
 
@@ -286,9 +302,13 @@ def _transform_fare_transfer_rules(
         return pd.DataFrame()
 
     cols = [
-        "from_leg_group_id", "to_leg_group_id",
-        "transfer_count", "duration_limit", "duration_limit_type",
-        "fare_transfer_type", "fare_product_id",
+        "from_leg_group_id",
+        "to_leg_group_id",
+        "transfer_count",
+        "duration_limit",
+        "duration_limit_type",
+        "fare_transfer_type",
+        "fare_product_id",
     ]
     present = [c for c in cols if c in fare_transfer_rules_raw.columns]
     df = fare_transfer_rules_raw[present].copy()
@@ -308,6 +328,7 @@ def _transform_fare_transfer_rules(
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+
 def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
     """
     Transform raw GTFS DataFrames into a FareTransformResult.
@@ -315,16 +336,18 @@ def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
     """
     log.info("fare transform: starting")
 
-    stops           = raw["stops"]
-    fare_media_raw  = raw["fare_media"]
+    stops = raw["stops"]
+    fare_media_raw = raw["fare_media"]
     fare_products_raw = raw["fare_products"]
-    fare_leg_raw    = raw["fare_leg_rules"]
-    transfer_raw    = raw.get("fare_transfer_rules")
-    feed_info_raw   = raw["feed_info"]
+    fare_leg_raw = raw["fare_leg_rules"]
+    transfer_raw = raw.get("fare_transfer_rules")
+    feed_info_raw = raw["feed_info"]
 
     # Build stop → zone lookup used by leg rule transform
     zoned = stops[stops["zone_id"].notna() & (stops["zone_id"].astype(str) != "")]
-    stop_zone_map: dict[str, str] = zoned.set_index("stop_id")["zone_id"].astype(str).to_dict()
+    stop_zone_map: dict[str, str] = (
+        zoned.set_index("stop_id")["zone_id"].astype(str).to_dict()
+    )
 
     fare_zones, station_zones, gate_zones = _transform_fare_zones(stops)
     fare_media = _transform_fare_media(fare_media_raw)
@@ -336,16 +359,16 @@ def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
     transfer_rules = _transform_fare_transfer_rules(transfer_raw)
 
     stats = {
-        "fare_zones":         len(fare_zones),
-        "fare_media":         len(fare_media),
-        "fare_products":      len(fare_products),
-        "fare_leg_rules":     len(leg_rules),
-        "applies_product":    len(applies_product),
-        "from_area":          len(from_area),
-        "to_area":            len(to_area),
-        "transfer_rules":     len(transfer_rules),
-        "station_zones":      len(station_zones),
-        "gate_zones":         len(gate_zones),
+        "fare_zones": len(fare_zones),
+        "fare_media": len(fare_media),
+        "fare_products": len(fare_products),
+        "fare_leg_rules": len(leg_rules),
+        "applies_product": len(applies_product),
+        "from_area": len(from_area),
+        "to_area": len(to_area),
+        "transfer_rules": len(transfer_rules),
+        "station_zones": len(station_zones),
+        "gate_zones": len(gate_zones),
     }
     for k, v in stats.items():
         log.info("fare transform: %-25s %6d rows", k, v)
