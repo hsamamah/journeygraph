@@ -83,6 +83,40 @@ def _df_to_rows(df: pd.DataFrame) -> list[dict]:
 # ── Phase 3: Tier 1 nodes ───────────────────────────────────────────────────
 
 
+def _purge_orphaned_interruptions(neo4j: Neo4jManager) -> None:
+    """
+    Delete Interruption nodes that have no SOURCED_FROM relationship.
+    These are artifacts of partial loads from failed pipeline runs —
+    created by Phase 4 MERGE but never linked to a source in Phase 6.
+    Valid historical Interruptions always have at least one SOURCED_FROM.
+    """
+    with neo4j.driver.session() as session:
+        record = session.run(
+            """
+            MATCH (i:Interruption)
+            WHERE NOT (i)-[:SOURCED_FROM]->()
+            RETURN count(i) AS n
+            """
+        ).single()
+        n = record["n"] if record else 0
+
+    if n > 0:
+        log.warning(
+            "interruption load: purging %d orphaned Interruption(s) "
+            "(no SOURCED_FROM — artifact of previous failed run)",
+            n,
+        )
+        neo4j.execute_write(
+            """
+            MATCH (i:Interruption)
+            WHERE NOT (i)-[:SOURCED_FROM]->()
+            DETACH DELETE i
+            """
+        )
+    else:
+        log.info("interruption load: no orphaned Interruptions found")
+
+
 def _load_tier1_nodes(neo4j: Neo4jManager, result: InterruptionTransformResult) -> None:
     nodes_cypher = _load_query("nodes.cypher")
 
@@ -479,6 +513,9 @@ def run(
     feed_version = "unknown"
     if feed_info_df is not None and not feed_info_df.empty:
         feed_version = ensure_feed_info(neo4j, feed_info_df)
+
+    # Purge orphaned Interruptions from previous failed runs
+    _purge_orphaned_interruptions(neo4j)
 
     # Phase 3 — Tier 1 nodes
     _load_tier1_nodes(neo4j, result)
