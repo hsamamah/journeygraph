@@ -38,17 +38,32 @@ MERGE (tu)-[:FROM_FEED]->(fi);
 
 // ── StopTimeUpdate -[:AT_STOP]-> Platform|BusStop ────────────────────────
 // $rows: [{parent_entity_id, stop_sequence, stop_id}]
-// Uses polymorphic MATCH — works for Platform or BusStop.
+// Prefix-based routing replaces OPTIONAL MATCH + coalesce:
+//   PF_  → Platform (rail stop times)
+//   else → BusStop  (bus stop times)
+// This allows Neo4j to use the stop_id index on each label directly
+// instead of running two scans per row.
+// See CONVENTIONS.md → "Stop ID Prefix Conventions"
 UNWIND $rows AS row
 MATCH (stu:StopTimeUpdate {
   parent_entity_id: row.parent_entity_id,
   stop_sequence: row.stop_sequence
 })
-OPTIONAL MATCH (p:Platform {stop_id: row.stop_id})
-OPTIONAL MATCH (bs:BusStop {stop_id: row.stop_id})
-WITH stu, coalesce(p, bs) AS stop
-WHERE stop IS NOT NULL
-MERGE (stu)-[:AT_STOP]->(stop);
+CALL {
+  WITH stu, row
+  CALL {
+    WITH row
+    WITH row WHERE row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:Platform {stop_id: row.stop_id})
+    RETURN stop
+    UNION ALL
+    WITH row
+    WITH row WHERE NOT row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:BusStop {stop_id: row.stop_id})
+    RETURN stop
+  }
+  MERGE (stu)-[:AT_STOP]->(stop)
+};
 
 // ── ServiceAlert -[:HAS_SELECTOR]-> EntitySelector ───────────────────────
 // $rows: [{feed_entity_id, selector_group_id}]
@@ -87,14 +102,31 @@ MERGE (es)-[:TARGETS_TRIP]->(t);
 
 // ── EntitySelector -[:TARGETS_STOP]-> Station|BusStop|Platform ───────────
 // $rows: [{selector_group_id, stop_id}]
+// Prefix-based routing:
+//   STN_ → Station, PF_ → Platform, else → BusStop
 UNWIND $rows AS row
 MATCH (es:EntitySelector {selector_group_id: row.selector_group_id})
-OPTIONAL MATCH (s:Station {stop_id: row.stop_id})
-OPTIONAL MATCH (p:Platform {stop_id: row.stop_id})
-OPTIONAL MATCH (bs:BusStop {stop_id: row.stop_id})
-WITH es, coalesce(s, p, bs) AS stop
-WHERE stop IS NOT NULL
-MERGE (es)-[:TARGETS_STOP]->(stop);
+CALL {
+  WITH es, row
+  CALL {
+    WITH row
+    WITH row WHERE row.stop_id STARTS WITH 'STN_'
+    MATCH (stop:Station {stop_id: row.stop_id})
+    RETURN stop
+    UNION ALL
+    WITH row
+    WITH row WHERE row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:Platform {stop_id: row.stop_id})
+    RETURN stop
+    UNION ALL
+    WITH row
+    WITH row WHERE NOT row.stop_id STARTS WITH 'STN_'
+      AND NOT row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:BusStop {stop_id: row.stop_id})
+    RETURN stop
+  }
+  MERGE (es)-[:TARGETS_STOP]->(stop)
+};
 
 // ── EntitySelector -[:TARGETS_AGENCY]-> Agency ───────────────────────────
 // $rows: [{selector_group_id, agency_id}]
@@ -141,14 +173,31 @@ MERGE (i)-[:AFFECTS_ROUTE]->(r);
 
 // ── Interruption -[:AFFECTS_STOP]-> Station|BusStop|Platform ─────────────
 // $rows: [{interruption_id, stop_id}]
+// Prefix-based routing:
+//   STN_ → Station, PF_ → Platform, else → BusStop
 UNWIND $rows AS row
 MATCH (i:Interruption {interruption_id: row.interruption_id})
-OPTIONAL MATCH (s:Station {stop_id: row.stop_id})
-OPTIONAL MATCH (p:Platform {stop_id: row.stop_id})
-OPTIONAL MATCH (bs:BusStop {stop_id: row.stop_id})
-WITH i, coalesce(s, p, bs) AS stop
-WHERE stop IS NOT NULL
-MERGE (i)-[:AFFECTS_STOP]->(stop);
+CALL {
+  WITH i, row
+  CALL {
+    WITH row
+    WITH row WHERE row.stop_id STARTS WITH 'STN_'
+    MATCH (stop:Station {stop_id: row.stop_id})
+    RETURN stop
+    UNION ALL
+    WITH row
+    WITH row WHERE row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:Platform {stop_id: row.stop_id})
+    RETURN stop
+    UNION ALL
+    WITH row
+    WITH row WHERE NOT row.stop_id STARTS WITH 'STN_'
+      AND NOT row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:BusStop {stop_id: row.stop_id})
+    RETURN stop
+  }
+  MERGE (i)-[:AFFECTS_STOP]->(stop)
+};
 
 // ── Interruption -[:ON_DATE]-> Date ──────────────────────────────────────
 // $rows: [{interruption_id, date}]
