@@ -20,8 +20,8 @@ BusStop nodes before Phase 4 runs.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
+import re
 
 import pandas as pd
 
@@ -119,7 +119,9 @@ def _load_routes(neo4j: Neo4jManager, result: ServiceTransformResult) -> None:
     if not result.routes_rail.empty:
         log.info("service load: Route:Rail (%d nodes)", len(result.routes_rail))
         cypher = _extract_statement(nodes_cypher, ":Route:Rail")
-        neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.routes_rail)})
+        neo4j.execute_write(
+            cypher, parameters={"rows": _df_to_rows(result.routes_rail)}
+        )
 
 
 def _load_route_patterns(neo4j: Neo4jManager, result: ServiceTransformResult) -> None:
@@ -190,28 +192,40 @@ def _load_internal_rels(neo4j: Neo4jManager, result: ServiceTransformResult) -> 
             return
         all_routes["agency_id"] = agency_id
 
-    agency_route_rows = _df_to_rows(all_routes[["agency_id", "route_id"]].drop_duplicates())
+    agency_route_rows = _df_to_rows(
+        all_routes[["agency_id", "route_id"]].drop_duplicates()
+    )
 
-    log.info("service load: Agency -[:OPERATES]-> Route (%d rels)", len(agency_route_rows))
+    log.info(
+        "service load: Agency -[:OPERATES]-> Route (%d rels)", len(agency_route_rows)
+    )
     neo4j.execute_write(
         _extract_statement(rel_cypher, "Agency -[:OPERATES]"),
         parameters={"rows": agency_route_rows},
     )
 
-    log.info("service load: Route -[:OPERATED_BY]-> Agency (%d rels)", len(agency_route_rows))
+    log.info(
+        "service load: Route -[:OPERATED_BY]-> Agency (%d rels)", len(agency_route_rows)
+    )
     neo4j.execute_write(
         _extract_statement(rel_cypher, "Route -[:OPERATED_BY]"),
         parameters={"rows": agency_route_rows},
     )
 
     # Route ↔ RoutePattern
-    rp_rows = _df_to_rows(result.route_patterns[["route_id", "shape_id"]].drop_duplicates())
-    log.info("service load: Route -[:HAS_PATTERN]-> RoutePattern (%d rels)", len(rp_rows))
+    rp_rows = _df_to_rows(
+        result.route_patterns[["route_id", "shape_id"]].drop_duplicates()
+    )
+    log.info(
+        "service load: Route -[:HAS_PATTERN]-> RoutePattern (%d rels)", len(rp_rows)
+    )
     neo4j.execute_write(
         _extract_statement(rel_cypher, "Route -[:HAS_PATTERN]"),
         parameters={"rows": rp_rows},
     )
-    log.info("service load: RoutePattern -[:BELONGS_TO]-> Route (%d rels)", len(rp_rows))
+    log.info(
+        "service load: RoutePattern -[:BELONGS_TO]-> Route (%d rels)", len(rp_rows)
+    )
     neo4j.execute_write(
         _extract_statement(rel_cypher, "RoutePattern -[:BELONGS_TO]"),
         parameters={"rows": rp_rows},
@@ -240,7 +254,9 @@ def _load_internal_rels(neo4j: Neo4jManager, result: ServiceTransformResult) -> 
     # Trip -[:OPERATED_ON]-> ServicePattern
     trip_svc = result.trips[["trip_id", "service_id"]].dropna(subset=["service_id"])
     ts_rows = _df_to_rows(trip_svc)
-    log.info("service load: Trip -[:OPERATED_ON]-> ServicePattern (%d rels)", len(ts_rows))
+    log.info(
+        "service load: Trip -[:OPERATED_ON]-> ServicePattern (%d rels)", len(ts_rows)
+    )
     neo4j.batch_write(
         _extract_statement(rel_cypher, "Trip -[:OPERATED_ON]"),
         ts_rows,
@@ -250,7 +266,9 @@ def _load_internal_rels(neo4j: Neo4jManager, result: ServiceTransformResult) -> 
 
     # ServicePattern -[:ACTIVE_ON]-> Date
     ao_rows = _df_to_rows(result.active_on)
-    log.info("service load: ServicePattern -[:ACTIVE_ON]-> Date (%d rels)", len(ao_rows))
+    log.info(
+        "service load: ServicePattern -[:ACTIVE_ON]-> Date (%d rels)", len(ao_rows)
+    )
     neo4j.batch_write(
         _extract_statement(rel_cypher, "ServicePattern -[:ACTIVE_ON]"),
         ao_rows,
@@ -335,7 +353,9 @@ def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) 
     ]
     if has_platforms and not rail_stops.empty:
         rows = _df_to_rows(rail_stops)
-        log.info("service load: RoutePattern -[:STOPS_AT]-> Platform (%d rels)", len(rows))
+        log.info(
+            "service load: RoutePattern -[:STOPS_AT]-> Platform (%d rels)", len(rows)
+        )
         neo4j.batch_write(
             _extract_statement(rel_cypher, "RoutePattern -[:STOPS_AT]-> Platform"),
             rows,
@@ -349,7 +369,9 @@ def _load_cross_layer_rels(neo4j: Neo4jManager, result: ServiceTransformResult) 
     ]
     if has_busstops and not bus_stops.empty:
         rows = _df_to_rows(bus_stops)
-        log.info("service load: RoutePattern -[:STOPS_AT]-> BusStop (%d rels)", len(rows))
+        log.info(
+            "service load: RoutePattern -[:STOPS_AT]-> BusStop (%d rels)", len(rows)
+        )
         neo4j.batch_write(
             _extract_statement(rel_cypher, "RoutePattern -[:STOPS_AT]-> BusStop"),
             rows,
@@ -407,5 +429,16 @@ def run(result: ServiceTransformResult, neo4j: Neo4jManager) -> None:
 
     # Phase 4 — Cross-layer relationships
     _load_cross_layer_rels(neo4j, result)
+
+    # ── Post-load validation ──────────────────────────────────────────────────
+    log.info("service load: running post-load validation")
+    from src.common.validators.service_schedule import validate_post_load
+
+    validation = validate_post_load(neo4j)
+    log.info("service load: post-load validation result:\n%s", validation.summary())
+    if not validation.passed:
+        raise ValueError(
+            f"Service layer post-load validation failed:\n{validation.summary()}"
+        )
 
     log.info("service load: complete — stats: %s", result.stats)
