@@ -175,3 +175,13 @@ re.split(r"\n(?=// ── )", cypher)
 
 Adding a block with a different comment style (e.g. plain `//` or
 `/* */`) will make it invisible to the loader.
+
+---
+
+## Rail Network IDs — Zone Anchoring
+
+`metrorail` and `metrorail_shuttle` are treated as rail networks and require
+FROM_AREA → FareZone anchoring for zone-priced rules. Exception: rules that
+apply `metrorail_free_fare` product have null from/to area IDs in GTFS —
+this is a known WMATA feed characteristic, not a data quality issue. The
+shuttle free-fare rule (leg_metrorail_shuttle) is legitimately flat-rate.

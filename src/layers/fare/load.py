@@ -277,9 +277,7 @@ def _extract_statement(cypher: str, label_hint: str) -> str:
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 
-def run(
-    result: FareTransformResult, neo4j: Neo4jManager, validate: bool = False
-) -> None:
+def run(result: FareTransformResult, neo4j: Neo4jManager) -> None:
     """
     Load all fare layer nodes and relationships into Neo4j.
     Runs post-load validation; raises ValueError on failure.
@@ -313,14 +311,13 @@ def run(
     _load_transfer_rule_rels(neo4j, result)
 
     # ── Post-load validation ──────────────────────────────────────────────────
-    if validate:
-        log.info("fare load: running post-load validation")
-        validation = validate_post_load(neo4j)
-        log.info("fare load: post-load validation result:\n%s", validation.summary())
+    log.info("fare load: running post-load validation")
+    validation = validate_post_load(neo4j)
+    log.info("fare load: post-load validation result:\n%s", validation.summary())
 
-        if not validation.passed:
-            raise ValueError(
-                f"Fare layer post-load validation failed:\n{validation.summary()}"
-            )
+    if not validation.passed:
+        raise ValueError(
+            f"Fare layer post-load validation failed:\n{validation.summary()}"
+        )
 
     log.info("fare load: complete — stats: %s", result.stats)
