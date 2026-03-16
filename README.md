@@ -73,13 +73,12 @@ uv run python -m src.pipeline --layers fare   # uses cached feed
 # Run all layers
 uv run python -m src.pipeline
 
-# Run specific layers — dependencies resolved automatically
-# e.g. --layers fare will run physical first since fare depends on it
+# Run specific layers — dependencies resolved  with added --cascade for downstream and  --with-deps for upstream
+# e.g. --layers fare will run fare layer
 uv run python -m src.pipeline --layers fare
-uv run python -m src.pipeline --layers physical fare
+# e.g. --layers fare will run physical first since fare depends on it
+uv run python -m src.pipeline --layers fare --with-deps
 
-# Check what would run without executing anything
-uv run python -m src.pipeline --layers fare --dry-run
 ```
 
 ---
@@ -101,6 +100,7 @@ data/
 └── gtfs/           # Extracted GTFS CSVs (git-ignored)
 queries/            # Cypher query library (one folder per layer)
 tests/
+demos/              # demos for presenting in class
 ```
 
 ---
