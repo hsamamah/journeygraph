@@ -25,12 +25,21 @@ Severity:
   SKIPPED → WARNING
   ServiceAlert → from alert severity_level
 
-Performance notes:
-  All inner-loop lookups against stop_time_updates, trip_updates, and
-  entity_selectors use pre-grouped dicts (O(1) per lookup) rather than
-  per-iteration DataFrame filters (O(m) per lookup). With n=2,205
-  TripUpdates and m=27,652 StopTimeUpdates the naive approach produced
-  ~60M row comparisons; the grouped approach reduces this to ~30K.
+Performance:
+  All transform operations are fully vectorised using pandas boolean
+  masking, groupby, merge, and string operations. No iterrows() or
+  apply(axis=1) with row.to_dict() anywhere in the hot path.
+
+  Hash computation: stop states are pre-aggregated into a single string
+  per entity_id using groupby + join (C-level), then merged to trip_updates.
+  The final sha256 call uses apply on a single pre-built string column —
+  unavoidable since hashlib is not vectorisable, but the Python overhead
+  is minimal compared to the previous per-row dict construction.
+
+  With n=2,205 TripUpdates and m=27,652 StopTimeUpdates:
+    _build_stu_index + apply(row.to_dict):  ~60M operations  (v1)
+    O(1) dict lookup in apply:              ~30K operations  (v2)
+    Fully vectorised groupby + merge:       ~C-speed          (v3, this file)
 """
 
 from __future__ import annotations
@@ -48,7 +57,7 @@ log = get_logger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 
 DELAY_THRESHOLD = 300   # seconds (5 minutes) — Rule 2
-SEVERE_DELAY = 900      # seconds (15 minutes)
+SEVERE_DELAY    = 900   # seconds (15 minutes)
 
 # ServiceAlert effect → Interruption type mapping (Rule 4)
 # OTHER_EFFECT mapped to service_change — WMATA uses it for miscellaneous
@@ -111,62 +120,75 @@ class InterruptionTransformResult:
 # ── Dedup hash ───────────────────────────────────────────────────────────────
 
 
-def _build_stu_index(
+def _compute_dedup_hashes(
+    trip_updates: pd.DataFrame,
     stop_time_updates: pd.DataFrame,
-) -> dict[str, list[tuple]]:
+) -> pd.Series:
     """
-    Pre-group StopTimeUpdates by parent_entity_id for O(1) hash lookups.
+    Compute deduplication hashes for all TripUpdates in one vectorised pass.
 
-    Returns dict: entity_id → list of (stop_sequence, schedule_relationship,
-    arrival_delay, departure_delay) tuples, sorted by stop_sequence.
+    Strategy:
+      1. Build a stop-state string per entity_id using groupby + apply on
+         stop_time_updates (C-level grouping, single pass over m rows).
+      2. Merge that string column onto trip_updates (one join).
+      3. Concatenate trip-level fields + stop-state string into a single
+         raw_hash column using vectorised string ops.
+      4. Apply sha256 once per row on the pre-built string — unavoidable
+         since hashlib is not vectorisable, but the Python work per row is
+         now a single encode() + hexdigest() call instead of row.to_dict()
+         + dict construction + inner loop.
 
-    Building this index once costs O(m). Each subsequent lookup is O(1)
-    instead of O(m), reducing total hash computation from O(n×m) to O(n+m).
-    With n=2,205 and m=27,652 this is ~60M → ~30K operations.
+    Returns a Series of 16-char hex strings aligned to trip_updates.index.
     """
-    index: dict[str, list[tuple]] = {}
-    if stop_time_updates.empty:
-        return index
+    # Step 1: aggregate stop states per entity_id — O(m), C-level groupby
+    if not stop_time_updates.empty:
+        stu = stop_time_updates.sort_values(
+            ["parent_entity_id", "stop_sequence"], na_position="last"
+        ).copy()
+        stu["_stop_state"] = (
+            stu["stop_sequence"].fillna("").astype(str) + ":"
+            + stu["schedule_relationship"].fillna("").astype(str) + ":"
+            + stu["arrival_delay"].fillna("").astype(str) + ":"
+            + stu["departure_delay"].fillna("").astype(str)
+        )
+        stop_strings = (
+            stu.groupby("parent_entity_id")["_stop_state"]
+            .apply("|".join)
+            .reset_index()
+            .rename(columns={
+                "parent_entity_id": "feed_entity_id",
+                "_stop_state": "_stop_states",
+            })
+        )
+    else:
+        stop_strings = pd.DataFrame(
+            columns=["feed_entity_id", "_stop_states"]
+        )
 
-    for _, stu in stop_time_updates.iterrows():
-        eid = stu["parent_entity_id"]
-        if eid not in index:
-            index[eid] = []
-        index[eid].append((
-            stu.get("stop_sequence"),
-            stu.get("schedule_relationship"),
-            stu.get("arrival_delay"),
-            stu.get("departure_delay"),
-        ))
+    # Step 2: merge stop state strings onto trip_updates — one join
+    tu = trip_updates.copy()
+    tu = tu.merge(stop_strings, on="feed_entity_id", how="left")
+    tu["_stop_states"] = tu["_stop_states"].fillna("")
 
-    # Sort each group by stop_sequence once — None sorts last
-    for eid in index:
-        index[eid].sort(key=lambda t: (t[0] is None, t[0]))
+    # Step 3: build raw hash string — vectorised string concatenation
+    # fillna("") before astype(str) prevents NaN columns from producing
+    # float NaN in the concatenated string, which would cause encode() to fail.
+    tu["_raw"] = (
+        tu["trip_id"].fillna("").astype(str) + "|"
+        + tu["start_date"].fillna("").astype(str) + "|"
+        + tu["schedule_relationship"].fillna("").astype(str) + "|"
+        + tu["delay"].fillna("").astype(str) + "|"
+        + tu["_stop_states"]
+    ).fillna("")  # guard: left merge can produce NaN if feed_entity_id unmatched
 
-    return index
-
-
-def _compute_tu_hash(row: dict, stu_index: dict[str, list[tuple]]) -> str:
-    """
-    Compute a deduplication hash for a TripUpdate.
-    Hash includes trip-level state + all stop-level states.
-
-    Uses pre-grouped stu_index for O(1) stop lookup instead of O(m)
-    DataFrame filter on each call.
-    """
-    parts = [
-        str(row.get("trip_id", "")),
-        str(row.get("start_date", "")),
-        str(row.get("schedule_relationship", "")),
-        str(row.get("delay", "")),
-    ]
-
-    entity_id = row.get("feed_entity_id")
-    for stop_seq, sched_rel, arr_delay, dep_delay in stu_index.get(entity_id, []):
-        parts.append(f"{stop_seq}:{sched_rel}:{arr_delay}:{dep_delay}")
-
-    raw = "|".join(parts)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+    # Step 4: hash — apply on single pre-built string column
+    # str(s) is a belt-and-suspenders guard against any residual non-str values
+    hashes = tu["_raw"].apply(
+        lambda s: hashlib.sha256(str(s).encode()).hexdigest()[:16]
+    )
+    # Realign to original index (merge may have changed it)
+    hashes.index = trip_updates.index
+    return hashes
 
 
 # ── Transform rules ──────────────────────────────────────────────────────────
@@ -177,138 +199,172 @@ def _apply_trip_update_rules(
     stop_time_updates: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Apply Rules 1, 2, 3 to TripUpdates and StopTimeUpdates.
+    Apply Rules 1, 2, 3 — fully vectorised, no iterrows().
+
+    Rules 1 + 2: boolean mask on schedule_relationship / delay column,
+    then DataFrame construction via assign() and column selection.
+
+    Rule 3: filter SKIPPED rows, merge parent TripUpdate context in one
+    join, then build output DataFrames from the merged result.
 
     Returns:
-      interruptions   — Interruption rows from Rules 1, 2, 3
-      sources         — interruption_id → source_entity_id mappings
-      affects_trip    — interruption_id → trip_id
-      affects_route   — interruption_id → route_id
-
-    Performance: pre-indexes trip_updates by feed_entity_id so Rule 3's
-    parent lookup is O(1) instead of O(n) per skipped stop.
+      interruptions, sources, affects_trip, affects_route
     """
-    int_rows: list[dict] = []
-    src_rows: list[dict] = []
-    trip_rows: list[dict] = []
-    route_rows: list[dict] = []
+    int_parts: list[pd.DataFrame] = []
+    src_parts: list[pd.DataFrame] = []
+    trip_parts: list[pd.DataFrame] = []
+    route_parts: list[pd.DataFrame] = []
 
-    # ── Rules 1 + 2: iterate TripUpdates ─────────────────────────────────────
+    # ── Rule 1: CANCELED → Cancellation ──────────────────────────────────────
 
-    for _, tu in trip_updates.iterrows():
-        entity_id  = tu["feed_entity_id"]
-        trip_id    = tu.get("trip_id")
-        route_id   = tu.get("route_id")
-        start_date = tu.get("start_date")
-        timestamp  = tu.get("timestamp")
+    canceled = trip_updates[
+        trip_updates["schedule_relationship"] == "CANCELED"
+    ].copy()
 
-        # Rule 1: CANCELED → Cancellation
-        if tu["schedule_relationship"] == "CANCELED":
-            int_id = f"int_tu_{entity_id}"
-            int_rows.append({
-                "interruption_id":   int_id,
-                "interruption_type": "cancellation",
-                "label":             "Cancellation",
-                "cause":             None,
-                "effect":            "NO_SERVICE",
-                "severity":          "SEVERE",
-                "start_time":        timestamp,
-                "end_time":          None,
-                "description":       f"Trip {trip_id} cancelled",
-                "date":              start_date,
-            })
-            src_rows.append({
-                "interruption_id":  int_id,
-                "source_entity_id": entity_id,
-                "source_type":      "TripUpdate",
-            })
-            if trip_id:
-                trip_rows.append({"interruption_id": int_id, "trip_id": trip_id})
-            if route_id:
-                route_rows.append({"interruption_id": int_id, "route_id": route_id})
+    if not canceled.empty:
+        canceled["interruption_id"]   = "int_tu_" + canceled["feed_entity_id"]
+        canceled["interruption_type"] = "cancellation"
+        canceled["label"]             = "Cancellation"
+        canceled["cause"]             = None
+        canceled["effect"]            = "NO_SERVICE"
+        canceled["severity"]          = "SEVERE"
+        canceled["end_time"]          = None
+        canceled["description"]       = "Trip " + canceled["trip_id"].astype(str) + " cancelled"
 
-        # Rule 2: delay >= threshold → Delay
-        elif tu.get("delay") is not None and tu["delay"] >= DELAY_THRESHOLD:
-            delay    = tu["delay"]
-            int_id   = f"int_tu_{entity_id}"
-            severity = "SEVERE" if delay >= SEVERE_DELAY else "WARNING"
-            int_rows.append({
-                "interruption_id":   int_id,
-                "interruption_type": "delay",
-                "label":             "Delay",
-                "cause":             None,
-                "effect":            "SIGNIFICANT_DELAYS",
-                "severity":          severity,
-                "start_time":        timestamp,
-                "end_time":          None,
-                "description":       f"Trip {trip_id} delayed {delay}s",
-                "date":              start_date,
-            })
-            src_rows.append({
-                "interruption_id":  int_id,
-                "source_entity_id": entity_id,
-                "source_type":      "TripUpdate",
-            })
-            if trip_id:
-                trip_rows.append({"interruption_id": int_id, "trip_id": trip_id})
-            if route_id:
-                route_rows.append({"interruption_id": int_id, "route_id": route_id})
+        int_parts.append(canceled[[
+            "interruption_id", "interruption_type", "label", "cause", "effect",
+            "severity", "timestamp", "end_time", "description", "start_date",
+        ]].rename(columns={"timestamp": "start_time", "start_date": "date"}))
+
+        src_parts.append(pd.DataFrame({
+            "interruption_id":  canceled["interruption_id"].values,
+            "source_entity_id": canceled["feed_entity_id"].values,
+            "source_type":      "TripUpdate",
+        }))
+
+        with_trip = canceled[canceled["trip_id"].notna()]
+        if not with_trip.empty:
+            trip_parts.append(with_trip[["interruption_id", "trip_id"]])
+
+        with_route = canceled[canceled["route_id"].notna()]
+        if not with_route.empty:
+            route_parts.append(with_route[["interruption_id", "route_id"]])
+
+    # ── Rule 2: delay >= threshold → Delay ───────────────────────────────────
+
+    delayed = trip_updates[
+        trip_updates["delay"].notna()
+        & (trip_updates["delay"] >= DELAY_THRESHOLD)
+        & (trip_updates["schedule_relationship"] != "CANCELED")
+    ].copy()
+
+    if not delayed.empty:
+        delayed["interruption_id"]   = "int_tu_" + delayed["feed_entity_id"]
+        delayed["interruption_type"] = "delay"
+        delayed["label"]             = "Delay"
+        delayed["cause"]             = None
+        delayed["effect"]            = "SIGNIFICANT_DELAYS"
+        delayed["severity"]          = delayed["delay"].apply(
+            lambda d: "SEVERE" if d >= SEVERE_DELAY else "WARNING"
+        )
+        delayed["end_time"]    = None
+        delayed["description"] = (
+            "Trip " + delayed["trip_id"].astype(str)
+            + " delayed " + delayed["delay"].astype(str) + "s"
+        )
+
+        int_parts.append(delayed[[
+            "interruption_id", "interruption_type", "label", "cause", "effect",
+            "severity", "timestamp", "end_time", "description", "start_date",
+        ]].rename(columns={"timestamp": "start_time", "start_date": "date"}))
+
+        src_parts.append(pd.DataFrame({
+            "interruption_id":  delayed["interruption_id"].values,
+            "source_entity_id": delayed["feed_entity_id"].values,
+            "source_type":      "TripUpdate",
+        }))
+
+        with_trip = delayed[delayed["trip_id"].notna()]
+        if not with_trip.empty:
+            trip_parts.append(with_trip[["interruption_id", "trip_id"]])
+
+        with_route = delayed[delayed["route_id"].notna()]
+        if not with_route.empty:
+            route_parts.append(with_route[["interruption_id", "route_id"]])
 
     # ── Rule 3: SKIPPED stops → Skip ─────────────────────────────────────────
     #
-    # Pre-index trip_updates by feed_entity_id — O(n) once.
-    # Without this, each skipped stop scans all trip_update rows: O(n×skipped).
+    # Filter SKIPPED rows, then merge parent TripUpdate context in one join
+    # instead of a per-row lookup.
 
     if not stop_time_updates.empty:
-        tu_by_entity: dict[str, dict] = {
-            row["feed_entity_id"]: row
-            for row in trip_updates.to_dict(orient="records")
-        }
-
         skipped = stop_time_updates[
             stop_time_updates["schedule_relationship"] == "SKIPPED"
-        ]
-        for _, stu in skipped.iterrows():
-            parent_id  = stu["parent_entity_id"]
-            stop_seq   = stu.get("stop_sequence", 0)
-            stop_id    = stu.get("stop_id")
-            int_id     = f"int_skip_{parent_id}_{stop_seq}"
+        ].copy()
 
-            # O(1) dict lookup replaces O(n) DataFrame filter
-            parent       = tu_by_entity.get(parent_id, {})
-            parent_date  = parent.get("start_date")
-            parent_time  = parent.get("timestamp")
-            parent_trip  = parent.get("trip_id")
-            parent_route = parent.get("route_id")
+        if not skipped.empty:
+            # Join parent context in one merge — no iterrows()
+            parent_cols = trip_updates[[
+                "feed_entity_id", "start_date", "timestamp", "trip_id", "route_id"
+            ]].rename(columns={"feed_entity_id": "parent_entity_id"})
 
-            int_rows.append({
-                "interruption_id":   int_id,
-                "interruption_type": "skip",
-                "label":             "Skip",
-                "cause":             None,
-                "effect":            "STOP_MOVED",
-                "severity":          "WARNING",
-                "start_time":        parent_time,
-                "end_time":          None,
-                "description":       f"Stop {stop_id} skipped (seq {stop_seq})",
-                "date":              parent_date,
-            })
-            src_rows.append({
-                "interruption_id":  int_id,
-                "source_entity_id": parent_id,
+            skipped = skipped.merge(parent_cols, on="parent_entity_id", how="left")
+
+            skipped["interruption_id"] = (
+                "int_skip_"
+                + skipped["parent_entity_id"].astype(str) + "_"
+                + skipped["stop_sequence"].astype(str)
+            )
+            skipped["interruption_type"] = "skip"
+            skipped["label"]             = "Skip"
+            skipped["cause"]             = None
+            skipped["effect"]            = "STOP_MOVED"
+            skipped["severity"]          = "WARNING"
+            skipped["end_time"]          = None
+            skipped["description"] = (
+                "Stop " + skipped["stop_id"].astype(str)
+                + " skipped (seq " + skipped["stop_sequence"].astype(str) + ")"
+            )
+
+            int_parts.append(skipped[[
+                "interruption_id", "interruption_type", "label", "cause", "effect",
+                "severity", "timestamp", "end_time", "description", "start_date",
+            ]].rename(columns={"timestamp": "start_time", "start_date": "date"}))
+
+            src_parts.append(pd.DataFrame({
+                "interruption_id":  skipped["interruption_id"].values,
+                "source_entity_id": skipped["parent_entity_id"].values,
                 "source_type":      "TripUpdate",
-            })
-            if parent_trip:
-                trip_rows.append({"interruption_id": int_id, "trip_id": parent_trip})
-            if parent_route:
-                route_rows.append({"interruption_id": int_id, "route_id": parent_route})
+            }))
 
-    return (
-        pd.DataFrame(int_rows)   if int_rows   else _empty_interruptions(),
-        pd.DataFrame(src_rows)   if src_rows   else _empty_sources(),
-        pd.DataFrame(trip_rows)  if trip_rows  else pd.DataFrame(columns=["interruption_id", "trip_id"]),
-        pd.DataFrame(route_rows) if route_rows else pd.DataFrame(columns=["interruption_id", "route_id"]),
+            with_trip = skipped[skipped["trip_id"].notna()]
+            if not with_trip.empty:
+                trip_parts.append(with_trip[["interruption_id", "trip_id"]])
+
+            with_route = skipped[skipped["route_id"].notna()]
+            if not with_route.empty:
+                route_parts.append(with_route[["interruption_id", "route_id"]])
+
+    # ── Assemble outputs ──────────────────────────────────────────────────────
+
+    interruptions = (
+        pd.concat(int_parts, ignore_index=True)
+        if int_parts else _empty_interruptions()
     )
+    sources = (
+        pd.concat(src_parts, ignore_index=True)
+        if src_parts else _empty_sources()
+    )
+    affects_trip = (
+        pd.concat(trip_parts, ignore_index=True).drop_duplicates()
+        if trip_parts else pd.DataFrame(columns=["interruption_id", "trip_id"])
+    )
+    affects_route = (
+        pd.concat(route_parts, ignore_index=True).drop_duplicates()
+        if route_parts else pd.DataFrame(columns=["interruption_id", "route_id"])
+    )
+
+    return interruptions, sources, affects_trip, affects_route
 
 
 def _apply_alert_rules(
@@ -316,86 +372,99 @@ def _apply_alert_rules(
     entity_selectors: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Apply Rule 4 to ServiceAlerts.
+    Apply Rule 4 — fully vectorised, no iterrows().
+
+    Filters alerts by mapped effects, builds Interruption rows via column
+    assign, then joins EntitySelectors in one merge to derive AFFECTS_*.
 
     Returns:
-      interruptions   — Interruption rows
-      sources         — interruption_id → source_entity_id
-      affects_trip    — interruption_id → trip_id
-      affects_route   — interruption_id → route_id
-      affects_stop    — interruption_id → stop_id
-
-    Performance: pre-indexes entity_selectors by parent_entity_id so the
-    selector lookup per alert is O(1) instead of O(k) where k is the total
-    number of EntitySelector rows.
+      interruptions, sources, affects_trip, affects_route, affects_stop
     """
-    int_rows: list[dict] = []
-    src_rows: list[dict] = []
-    trip_rows: list[dict] = []
-    route_rows: list[dict] = []
-    stop_rows: list[dict] = []
+    # Filter to mapped effects only
+    mapped = service_alerts[
+        service_alerts["effect"].isin(EFFECT_TYPE_MAP)
+    ].copy()
 
-    # Pre-index EntitySelectors by parent_entity_id — O(k) once
-    sel_by_parent: dict[str, list[dict]] = {}
-    if not entity_selectors.empty:
-        for row in entity_selectors.to_dict(orient="records"):
-            eid = row["parent_entity_id"]
-            if eid not in sel_by_parent:
-                sel_by_parent[eid] = []
-            sel_by_parent[eid].append(row)
+    if mapped.empty:
+        return (
+            _empty_interruptions(),
+            _empty_sources(),
+            pd.DataFrame(columns=["interruption_id", "trip_id"]),
+            pd.DataFrame(columns=["interruption_id", "route_id"]),
+            pd.DataFrame(columns=["interruption_id", "stop_id"]),
+        )
 
-    for _, alert in service_alerts.iterrows():
-        effect = alert.get("effect", "")
-        if effect not in EFFECT_TYPE_MAP:
-            continue
+    # Build Interruption rows — vectorised
+    mapped["interruption_id"]   = "int_sa_" + mapped["feed_entity_id"]
+    mapped["interruption_type"] = mapped["effect"].map(EFFECT_TYPE_MAP)
+    mapped["label"]             = mapped["interruption_type"].map(TYPE_LABEL_MAP).fillna("ServiceChange")
+    mapped["end_time"]          = mapped["active_period_end"]
+    mapped["start_time"]        = mapped["active_period_start"]
+    mapped["description"]       = mapped["header_text"]
+    mapped["severity"]          = mapped["severity_level"].fillna("UNKNOWN_SEVERITY")
 
-        entity_id = alert["feed_entity_id"]
-        int_id    = f"int_sa_{entity_id}"
-        int_type  = EFFECT_TYPE_MAP[effect]
-
-        # Derive date from active_period_start (epoch → YYYYMMDD)
-        alert_date = None
-        if alert.get("active_period_start"):
+    # Derive date from active_period_start (epoch → YYYYMMDD) — vectorised
+    def _epoch_to_date(series: pd.Series) -> pd.Series:
+        def _convert(v):
+            if pd.isna(v):
+                return None
             try:
-                dt = datetime.fromtimestamp(int(alert["active_period_start"]))
-                alert_date = dt.strftime("%Y%m%d")
+                return datetime.fromtimestamp(int(v)).strftime("%Y%m%d")
             except (ValueError, TypeError, OSError):
-                pass
+                return None
+        return series.apply(_convert)
 
-        int_rows.append({
-            "interruption_id":   int_id,
-            "interruption_type": int_type,
-            "label":             TYPE_LABEL_MAP.get(int_type, "ServiceChange"),
-            "cause":             alert.get("cause"),
-            "effect":            effect,
-            "severity":          alert.get("severity_level", "UNKNOWN_SEVERITY"),
-            "start_time":        alert.get("active_period_start"),
-            "end_time":          alert.get("active_period_end"),
-            "description":       alert.get("header_text"),
-            "date":              alert_date,
-        })
-        src_rows.append({
-            "interruption_id":  int_id,
-            "source_entity_id": entity_id,
-            "source_type":      "ServiceAlert",
-        })
+    mapped["date"] = _epoch_to_date(mapped["active_period_start"])
 
-        # O(1) selector lookup replaces O(k) DataFrame filter per alert
-        for sel in sel_by_parent.get(entity_id, []):
-            if sel.get("trip_id") and pd.notna(sel["trip_id"]):
-                trip_rows.append({"interruption_id": int_id, "trip_id": sel["trip_id"]})
-            if sel.get("route_id") and pd.notna(sel["route_id"]):
-                route_rows.append({"interruption_id": int_id, "route_id": sel["route_id"]})
-            if sel.get("stop_id") and pd.notna(sel["stop_id"]):
-                stop_rows.append({"interruption_id": int_id, "stop_id": sel["stop_id"]})
+    interruptions = mapped[[
+        "interruption_id", "interruption_type", "label", "cause", "effect",
+        "severity", "start_time", "end_time", "description", "date",
+    ]].copy()
 
-    return (
-        pd.DataFrame(int_rows)   if int_rows   else _empty_interruptions(),
-        pd.DataFrame(src_rows)   if src_rows   else _empty_sources(),
-        pd.DataFrame(trip_rows)  if trip_rows  else pd.DataFrame(columns=["interruption_id", "trip_id"]),
-        pd.DataFrame(route_rows) if route_rows else pd.DataFrame(columns=["interruption_id", "route_id"]),
-        pd.DataFrame(stop_rows)  if stop_rows  else pd.DataFrame(columns=["interruption_id", "stop_id"]),
+    sources = pd.DataFrame({
+        "interruption_id":  mapped["interruption_id"].values,
+        "source_entity_id": mapped["feed_entity_id"].values,
+        "source_type":      "ServiceAlert",
+    })
+
+    # Derive AFFECTS_* from EntitySelectors — one merge instead of per-alert loop
+    if entity_selectors.empty:
+        return (
+            interruptions,
+            sources,
+            pd.DataFrame(columns=["interruption_id", "trip_id"]),
+            pd.DataFrame(columns=["interruption_id", "route_id"]),
+            pd.DataFrame(columns=["interruption_id", "stop_id"]),
+        )
+
+    # Join selectors to mapped alerts
+    id_map = mapped[["feed_entity_id", "interruption_id"]]
+    sel = entity_selectors.merge(
+        id_map.rename(columns={"feed_entity_id": "parent_entity_id"}),
+        on="parent_entity_id",
+        how="inner",
     )
+
+    affects_trip = (
+        sel[sel["trip_id"].notna()][["interruption_id", "trip_id"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    affects_route = (
+        sel[sel["route_id"].notna()][["interruption_id", "route_id"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+    affects_stop = (
+        sel[sel["stop_id"].notna()][["interruption_id", "stop_id"]]
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+
+    return interruptions, sources, affects_trip, affects_route, affects_stop
+
+
+# ── Empty frame helpers ───────────────────────────────────────────────────────
 
 
 def _empty_interruptions() -> pd.DataFrame:
@@ -426,15 +495,14 @@ def run(raw: dict[str, pd.DataFrame]) -> InterruptionTransformResult:
 
     # ── Dedup hashes on TripUpdates ──────────────────────────────────────────
     #
-    # Build STU index once — O(m). Hash computation drops from O(n×m) to
-    # O(n+m). With n=2,205 and m=27,652: ~60M → ~30K operations.
+    # Fully vectorised: stop states aggregated via groupby (C-level),
+    # merged onto trip_updates in one join, hash string built via vectorised
+    # string ops. sha256 apply runs on a single pre-built string column.
 
     if not trip_updates.empty:
         trip_updates = trip_updates.copy()
-        stu_index = _build_stu_index(stop_time_updates)
-        trip_updates["dedup_hash"] = trip_updates.apply(
-            lambda row: _compute_tu_hash(row.to_dict(), stu_index),
-            axis=1,
+        trip_updates["dedup_hash"] = _compute_dedup_hashes(
+            trip_updates, stop_time_updates
         )
         before = len(trip_updates)
         trip_updates = trip_updates.drop_duplicates(subset=["dedup_hash"])
