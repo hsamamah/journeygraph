@@ -302,9 +302,19 @@ def _resolve_calendar(
 
         service_labels[sid] = _classify_service(row.to_dict(), sid)
 
+        # Clip to feed window — prevents _R maintenance patterns with
+        # multi-year ranges (e.g. 20240101–20301231) from generating thousands
+        # of Date nodes outside the feed's validity period.
+        # See CONVENTIONS.md → "Maintenance Service Detection"
+        effective_start = max(start, feed_start)
+        effective_end   = min(end,   feed_end)
+
         dates: set[str] = set()
-        current = start
-        while current <= end:
+        if effective_start > effective_end:
+            service_dates[sid] = dates
+            continue
+        current = effective_start
+        while current <= effective_end:
             day_col = DAY_COLS[current.weekday()]
             if int(row.get(day_col, 0) or 0) == 1:
                 dates.add(current.strftime("%Y%m%d"))
