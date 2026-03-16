@@ -13,7 +13,7 @@ CREATE CONSTRAINT fare_product_id       IF NOT EXISTS
   FOR (n:FareProduct)    REQUIRE n.fare_product_id  IS UNIQUE;
 
 CREATE CONSTRAINT fare_leg_rule_id      IF NOT EXISTS
-  FOR (n:FareLegRule)    REQUIRE n.leg_group_id     IS UNIQUE;
+  FOR (n:FareLegRule)    REQUIRE n.rule_id          IS UNIQUE;
 
 CREATE CONSTRAINT fare_transfer_rule_id IF NOT EXISTS
   FOR (n:FareTransferRule) REQUIRE n.rule_id        IS UNIQUE;
