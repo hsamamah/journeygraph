@@ -23,10 +23,10 @@ MERGE (fp:FareProduct {fare_product_id: row.fare_product_id})
 SET   fp.fare_product_name = row.fare_product_name;
 
 // ── :FareLegRule ───────────────────────────────────────────────────────────
-// $rows: [{leg_group_id, network_id}]
 UNWIND $rows AS row
-MERGE (flr:FareLegRule {leg_group_id: row.leg_group_id})
-SET   flr.network_id = row.network_id;
+MERGE (flr:FareLegRule {rule_id: row.rule_id})
+SET flr.leg_group_id = row.leg_group_id,
+    flr.network_id   = row.network_id
 
 // ── :FareTransferRule ──────────────────────────────────────────────────────
 // $rows: [{rule_id, from_leg_group_id, to_leg_group_id, transfer_count,

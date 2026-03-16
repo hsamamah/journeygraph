@@ -44,36 +44,34 @@ MERGE (fp)-[:ACCEPTED_VIA]->(fm);
 
 // ── FareLegRule -[:FROM_AREA]-> FareZone ───────────────────────────────────
 // Rail only. Bus leg rules have no area anchor.
-// $rows: [{leg_group_id, zone_id}]
 UNWIND $rows AS row
-MATCH (flr:FareLegRule {leg_group_id: row.leg_group_id})
-MATCH (fz:FareZone     {zone_id:      row.zone_id})
-MERGE (flr)-[:FROM_AREA]->(fz);
+MATCH (flr:FareLegRule {rule_id: row.rule_id})
+MATCH (fz:FareZone {zone_id: row.zone_id})
+MERGE (flr)-[:FROM_AREA]->(fz)
 
 // ── FareLegRule -[:TO_AREA]-> FareZone ─────────────────────────────────────
 // Rail only.
-// $rows: [{leg_group_id, zone_id}]
+// $rows: [{rule_id, zone_id}]
 UNWIND $rows AS row
-MATCH (flr:FareLegRule {leg_group_id: row.leg_group_id})
-MATCH (fz:FareZone     {zone_id:      row.zone_id})
+MATCH (flr:FareLegRule {rule_id:  row.rule_id})
+MATCH (fz:FareZone     {zone_id:  row.zone_id})
 MERGE (flr)-[:TO_AREA]->(fz);
 
-// ── FareLegRule -[:APPLIES_PRODUCT]-> FareProduct ──────────────────────────
-// Amount and timeframe live on this relationship — not on FareProduct node.
-// $rows: [{leg_group_id, fare_product_id, timeframe, amount, currency}]
+// ── FareLegRule -[:APPLIES_PRODUCT]-> FareProduct
 UNWIND $rows AS row
-MATCH (flr:FareLegRule  {leg_group_id:   row.leg_group_id})
-MATCH (fp:FareProduct   {fare_product_id: row.fare_product_id})
-MERGE (flr)-[r:APPLIES_PRODUCT {timeframe: row.timeframe}]->(fp)
-SET   r.amount   = row.amount,
-      r.currency = row.currency;
+MATCH (flr:FareLegRule {rule_id: row.rule_id})
+MATCH (fp:FareProduct {fare_product_id: row.fare_product_id})
+MERGE (flr)-[:APPLIES_PRODUCT {
+    timeframe: row.timeframe,
+    amount:    row.amount,
+    currency:  row.currency
+}]->(fp)
 
-// ── FareTransferRule -[:FROM_LEG]-> FareLegRule ────────────────────────────
-// $rows: [{rule_id, from_leg_group_id}]
+// ── FareTransferRule -[:FROM_LEG]-> FareLegRule  (matches all OD pairs in group)
 UNWIND $rows AS row
-MATCH (ftr:FareTransferRule {rule_id:      row.rule_id})
-MATCH (flr:FareLegRule      {leg_group_id: row.from_leg_group_id})
-MERGE (ftr)-[:FROM_LEG]->(flr);
+MATCH (ftr:FareTransferRule {rule_id: row.rule_id})
+MATCH (flr:FareLegRule {leg_group_id: row.from_leg_group_id})
+MERGE (ftr)-[:FROM_LEG]->(flr)
 
 // ── FareTransferRule -[:TO_LEG]-> FareLegRule ──────────────────────────────
 // $rows: [{rule_id, to_leg_group_id}]
