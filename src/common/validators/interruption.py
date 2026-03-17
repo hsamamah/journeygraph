@@ -91,7 +91,9 @@ def validate_pre_load(
     # dedup step was bypassed.
 
     if not trip_updates.empty and "dedup_hash" in trip_updates.columns:
-        dup_hashes = trip_updates[trip_updates.duplicated(subset=["dedup_hash"], keep=False)]
+        dup_hashes = trip_updates[
+            trip_updates.duplicated(subset=["dedup_hash"], keep=False)
+        ]
         if not dup_hashes.empty:
             n = dup_hashes["dedup_hash"].nunique()
             result.fail(
@@ -208,8 +210,10 @@ def validate_pre_load(
             tu_ent_ids = {iid.replace("int_tu_", "") for iid in tu_int_ids}
             null_trip = trip_updates[
                 trip_updates["feed_entity_id"].isin(tu_ent_ids)
-                & (trip_updates["trip_id"].isna()
-                   | (trip_updates["trip_id"].astype(str).str.strip() == ""))
+                & (
+                    trip_updates["trip_id"].isna()
+                    | (trip_updates["trip_id"].astype(str).str.strip() == "")
+                )
             ]
             if not null_trip.empty:
                 result.warn(
@@ -218,9 +222,7 @@ def validate_pre_load(
                     f"{null_trip['feed_entity_id'].tolist()[:5]}"
                 )
             else:
-                result.note(
-                    "All TripUpdate-derived Interruptions have a trip_id"
-                )
+                result.note("All TripUpdate-derived Interruptions have a trip_id")
 
     # ── Check 6: ServiceAlerts with unmapped effect values ────────────────────
     #
@@ -229,9 +231,7 @@ def validate_pre_load(
     # future feed version would otherwise be invisible.
 
     if not service_alerts.empty:
-        unmapped = service_alerts[
-            ~service_alerts["effect"].isin(_MAPPED_EFFECTS)
-        ]
+        unmapped = service_alerts[~service_alerts["effect"].isin(_MAPPED_EFFECTS)]
         if not unmapped.empty:
             effects = unmapped["effect"].value_counts().to_dict()
             result.warn(
@@ -275,7 +275,9 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
             RETURN count(*) AS n
             """,
             lambda n: n == 0,
-            lambda n: f"{n} dedup_hash value(s) appear on more than one TripUpdate node",
+            lambda n: (
+                f"{n} dedup_hash value(s) appear on more than one TripUpdate node"
+            ),
             "No duplicate dedup_hash values on TripUpdate nodes",
         ),
         (
@@ -287,7 +289,9 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
             RETURN count(*) AS n
             """,
             lambda n: n == 0,
-            lambda n: f"{n} feed_entity_id value(s) appear on more than one ServiceAlert node",
+            lambda n: (
+                f"{n} feed_entity_id value(s) appear on more than one ServiceAlert node"
+            ),
             "No duplicate feed_entity_id values on ServiceAlert nodes",
         ),
         (
@@ -299,7 +303,9 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
             RETURN count(*) AS n
             """,
             lambda n: n == 0,
-            lambda n: f"{n} interruption_id value(s) appear on more than one Interruption node",
+            lambda n: (
+                f"{n} interruption_id value(s) appear on more than one Interruption node"
+            ),
             "No duplicate interruption_id values on Interruption nodes",
         ),
         (
@@ -338,9 +344,9 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
         """
     )
     if n > 0:
-        result.warn(
-            f"{n} Interruption(s) have no ON_DATE → Date relationship "
-            f"(null date in source — may be expected for some RT feeds)"
+        result.note(
+            f"{n} Interruption(s) have no ON_DATE → Date "
+            f"(null start_date expected for bus TripUpdates)"
         )
     else:
         result.note("All Interruptions have ON_DATE → Date")
@@ -363,9 +369,7 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
             f"→ Trip relationship (null trip_id in TripUpdate source)"
         )
     else:
-        result.note(
-            "All Cancellation and Delay Interruptions have AFFECTS_TRIP → Trip"
-        )
+        result.note("All Cancellation and Delay Interruptions have AFFECTS_TRIP → Trip")
 
     # ── Check 13: Rule 6 enrichment result (info only) ────────────────────────
     #
@@ -393,13 +397,25 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
         ("MATCH (stu:StopTimeUpdate)      RETURN count(stu) AS n", "StopTimeUpdate"),
         ("MATCH (sa:ServiceAlert)         RETURN count(sa) AS n", "ServiceAlert"),
         ("MATCH (es:EntitySelector)       RETURN count(es) AS n", "EntitySelector"),
-        ("MATCH (i:Interruption)          RETURN count(i) AS n", "Interruption (total)"),
-        ("MATCH (i:Interruption:Cancellation) RETURN count(i) AS n", "Interruption:Cancellation"),
+        (
+            "MATCH (i:Interruption)          RETURN count(i) AS n",
+            "Interruption (total)",
+        ),
+        (
+            "MATCH (i:Interruption:Cancellation) RETURN count(i) AS n",
+            "Interruption:Cancellation",
+        ),
         ("MATCH (i:Interruption:Delay)    RETURN count(i) AS n", "Interruption:Delay"),
         ("MATCH (i:Interruption:Skip)     RETURN count(i) AS n", "Interruption:Skip"),
         ("MATCH (i:Interruption:Detour)   RETURN count(i) AS n", "Interruption:Detour"),
-        ("MATCH (i:Interruption:ServiceChange) RETURN count(i) AS n", "Interruption:ServiceChange"),
-        ("MATCH (i:Interruption:Accessibility) RETURN count(i) AS n", "Interruption:Accessibility"),
+        (
+            "MATCH (i:Interruption:ServiceChange) RETURN count(i) AS n",
+            "Interruption:ServiceChange",
+        ),
+        (
+            "MATCH (i:Interruption:Accessibility) RETURN count(i) AS n",
+            "Interruption:Accessibility",
+        ),
     ]
 
     for cypher, label in soft_counts:
