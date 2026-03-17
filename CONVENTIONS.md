@@ -185,3 +185,13 @@ FROM_AREA → FareZone anchoring for zone-priced rules. Exception: rules that
 apply `metrorail_free_fare` product have null from/to area IDs in GTFS —
 this is a known WMATA feed characteristic, not a data quality issue. The
 shuttle free-fare rule (leg_metrorail_shuttle) is legitimately flat-rate.
+
+
+## ServiceAlert Effect Mapping
+
+WMATA uses OTHER_EFFECT for miscellaneous service modifications that don't
+fit named GTFS-RT effect categories. Mapped to service_change in
+EFFECT_TYPE_MAP. This is the most common alert effect in the bus feed.
+
+Bus TripUpdates frequently omit start_date — ON_DATE relationships will
+be missing for these. Expected; not a data quality issue.
