@@ -15,6 +15,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"  # downloaded zips, API dumps
 GTFS_DIR = DATA_DIR / "gtfs"  # extracted GTFS CSVs
 LOG_DIR = PROJECT_ROOT / "logs"
+SLICES_DIR = PROJECT_ROOT / "src" / "llm" / "slices"  # LLM schema slice YAML files
 
 
 def get_gtfs_path(filename: str) -> Path:

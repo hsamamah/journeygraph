@@ -3,6 +3,13 @@ config.py — single source of truth for all environment variables.
 
 All other modules import from here instead of calling os.getenv() directly.
 Add new env vars here as the project grows.
+
+ETL pipeline config:  get_config()     → Config
+LLM pipeline config:  get_llm_config() → LLMConfig
+
+The two configs are intentionally separate. The ETL pipeline has no dependency
+on LLM credentials, so a missing ANTHROPIC_API_KEY never surfaces during
+a normal pipeline run. get_llm_config() is only called by src/llm/ code.
 """
 
 from dataclasses import dataclass
@@ -46,4 +53,47 @@ def get_config() -> Config:
             "GTFS_FEED_URL",
             "https://api.wmata.com/gtfs/rail-bus-gtfs-static.zip",
         ),
+    )
+
+
+# ── LLM pipeline config ───────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class LLMConfig:
+    """
+    Configuration for the LLM query pipeline.
+
+    Separate from Config so the ETL pipeline has no dependency on LLM
+    credentials. Only imported and called by src/llm/ code.
+
+    Environment variables:
+        ANTHROPIC_API_KEY   Required. API key for the Anthropic client.
+        LLM_PROVIDER        Optional. Defaults to 'anthropic'.
+                            Used by llm_factory.py to select the LLM class.
+        LLM_MODEL           Optional. Defaults to 'claude-haiku-4-5-20251001'.
+                            Pinned snapshot string — not an alias — for
+                            stable, reproducible behaviour across releases.
+        LLM_MAX_TOKENS      Optional. Defaults to 512.
+                            Controls Stage 2 Planner call token budget.
+                            Increase if Planner responses are being truncated.
+    """
+
+    anthropic_api_key: str
+    llm_provider: str
+    llm_model: str
+    llm_max_tokens: int
+
+
+def get_llm_config() -> LLMConfig:
+    """
+    Build and validate LLM config from environment variables.
+    Raises OSError if ANTHROPIC_API_KEY is not set.
+    Call this at LLM pipeline startup, not at module import time.
+    """
+    return LLMConfig(
+        anthropic_api_key=_require("ANTHROPIC_API_KEY"),
+        llm_provider=os.getenv("LLM_PROVIDER", "anthropic"),
+        llm_model=os.getenv("LLM_MODEL", "claude-haiku-4-5-20251001"),
+        llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512")),
     )

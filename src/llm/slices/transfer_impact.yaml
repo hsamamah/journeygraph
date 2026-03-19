@@ -1,0 +1,60 @@
+# src/llm/slices/transfer_impact.yaml
+#
+# Schema slice for transfer point impact analysis.
+#
+# Core question: which trips were cancelled on a given date and which
+# transfer opportunities did those cancellations break?
+#
+# Key traversal: cancellations on a date → affected trips → scheduled
+# platforms → other trips scheduled at the same platform (transfer partners).
+#
+# Park (2023) alignment: multi-hop graph traversal over the static baseline
+# (SCHEDULED_AT) overlaid with the Interruption layer. The static graph is
+# untouched; cancellations are read from the overlay.
+
+domain: transfer_impact
+
+# ── Node label whitelist ──────────────────────────────────────────────────────
+# Exact label strings the LLM may reference. Multi-labels use colon notation.
+# Acts as a whitelist for Cypher Validator check 2 (future branch).
+nodes:
+  - ":Interruption:Cancellation"
+  - ":Trip"
+  - ":Route"
+  - ":Route:Rail"
+  - ":Route:Bus"
+  - ":Station"
+  - ":Platform"
+  - ":Date"
+
+# ── Relationship triples ──────────────────────────────────────────────────────
+# Directed triples (from → type → to). Relationship type validated against
+# db.relationshipTypes() at startup. Direction prevents reversed arrows in
+# generated Cypher.
+relationships:
+  - { from: "Date",         type: "ON_DATE",       to: "Interruption"  }
+  - { from: "Interruption", type: "AFFECTS_TRIP",  to: "Trip"          }
+  - { from: "Interruption", type: "AFFECTS_ROUTE", to: "Route"         }
+  - { from: "Interruption", type: "AFFECTS_STOP",  to: "Station"       }
+  - { from: "Trip",         type: "SCHEDULED_AT",  to: "Platform"      }
+  - { from: "Trip",         type: "FOLLOWS",       to: "RoutePattern"  }
+  - { from: "RoutePattern", type: "BELONGS_TO",    to: "Route"         }
+  - { from: "Trip",         type: "OPERATED_ON",   to: "ServicePattern"}
+
+# ── Traversal patterns ────────────────────────────────────────────────────────
+# Pseudo-Cypher few-shot templates. Encode the multi-hop structure required
+# for this domain. Injected into Query Writer prompt as examples.
+patterns:
+  - "(:Date)<-[:ON_DATE]-(:Interruption:Cancellation)-[:AFFECTS_TRIP]->(:Trip)"
+  - "(:Trip)-[:SCHEDULED_AT]->(:Platform)<-[:SCHEDULED_AT]-(:Trip)"
+
+# ── WMATA-specific warnings ───────────────────────────────────────────────────
+# Data quirks from CONVENTIONS.md. Injected directly into Query Writer prompt.
+# In a future lexicological KG layer these can be expanded from simple strings
+# to chunked documents from the WMATA developer portal.
+warnings:
+  - "Use :Cancellation label directly — do not filter WHERE interruption_type='cancellation'"
+  - "Transfer partners are found via shared Platform on SCHEDULED_AT, not a TRANSFERS relationship — no transfers.txt in WMATA feed"
+  - "Trip has no mode label — traverse FOLLOWS->RoutePattern->BELONGS_TO->:Route:Bus|:Rail to determine mode"
+  - "SCHEDULED_AT carries arrival_time and departure_time as relationship properties, not node properties"
+  - "date value format is YYYYMMDD string e.g. '20260315' — not a Date type"

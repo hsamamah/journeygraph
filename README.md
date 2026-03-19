@@ -1,14 +1,17 @@
 # JourneyGraph
 
-ETL pipeline that loads WMATA transit data into a Neo4j knowledge graph. Ingests GTFS static feeds and real-time WMATA API data across four domain layers: Physical Infrastructure, Service & Schedule, Fare, and Accessibility.
+A Neo4j knowledge graph of the WMATA Washington DC Metro transit system, built on GTFS static feeds and GTFS-RT real-time data. The project has two main components:
 
-> **Current state:** The Fare layer is implemented and tested. The Physical, Service & Schedule, and Accessibility layers are stubs — see [Adding a New Layer](#adding-a-new-layer) to implement yours.
+- **ETL pipeline** (`src/pipeline.py`) — ingests GTFS static and WMATA API data into Neo4j across five domain layers
+- **LLM query pipeline** (`src/llm/`) — natural language querying over the graph via a multi-agent pipeline
+
+> **Current state:** The Fare, Service & Schedule, Interruption, and Accessibility layers are implemented. Physical Infrastructure is a stub. The LLM pipeline has the Planner stage implemented — see [`src/llm/README.md`](src/llm/README.md) for details.
 
 ---
 
 ## How It Works
 
-`pipeline.py` is the main entry point. It handles two things:
+`pipeline.py` is the ETL entry point. It handles two things:
 
 1. **Downloading the GTFS feed** — fetches the WMATA static GTFS zip, extracts it, and parses every CSV into a shared `dict[str, pd.DataFrame]` keyed by filename stem (e.g. `gtfs_data["stops"]`, `gtfs_data["fare_leg_rules"]`).
 
@@ -26,15 +29,29 @@ The Fare layer (`src/layers/fare/`) is a good reference implementation. It split
 
 ```bash
 git clone <repo-url> && cd journeygraph
-uv sync --group dev
+cp .env.example .env   # fill in your values
 ```
 
-**.env**
+**Install dependencies:**
+```bash
+uv sync                        # ETL pipeline only
+uv sync --extra llm            # + LLM query pipeline
+uv sync --extra demo           # + Jupyter demo notebooks
+uv sync --extra llm --extra demo  # everything
+uv sync --group dev            # + dev tools (ruff, pytest)
+```
+
+**.env** — see `.env.example` for all variables. Minimum required:
 ```
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
 NEO4J_PASSWORD=your_password
-WMATA_API_KEY=your_api_key
+WMATA_API_KEY=your_wmata_api_key
+```
+
+For the LLM pipeline, also add:
+```
+ANTHROPIC_API_KEY=your_anthropic_api_key
 ```
 
 ---
@@ -73,12 +90,10 @@ uv run python -m src.pipeline --layers fare   # uses cached feed
 # Run all layers
 uv run python -m src.pipeline
 
-# Run specific layers — dependencies resolved  with added --cascade for downstream and  --with-deps for upstream
-# e.g. --layers fare will run fare layer
+# Run specific layers — dependencies resolved automatically
 uv run python -m src.pipeline --layers fare
-# e.g. --layers fare will run physical first since fare depends on it
-uv run python -m src.pipeline --layers fare --with-deps
-
+uv run python -m src.pipeline --layers fare --with-deps    # include upstream
+uv run python -m src.pipeline --layers fare --cascade      # include downstream
 ```
 
 ---
@@ -90,17 +105,19 @@ src/
 ├── common/         # Shared utilities (logger, Neo4j driver, config, paths, validators)
 ├── ingest/         # GTFS downloader + WMATA API client
 ├── layers/
-│   ├── physical/         # Stops, pathways, levels  [stub]
-│   ├── service_schedule/ # Routes, trips, calendar  [stub]
-│   ├── fare/             # Fare products, zones, rules, media  [implemented]
-│   └── accessibility/    # Elevator/escalator outage events  [stub]
-└── pipeline.py     # Entry point — download + layer orchestration
+│   ├── physical/         # Stops, pathways, levels              [stub]
+│   ├── service_schedule/ # Routes, trips, calendar              [implemented]
+│   ├── fare/             # Fare products, zones, rules, media   [implemented]
+│   ├── accessibility/    # Elevator/escalator outage events     [implemented]
+│   └── interruption/     # Real-time service disruptions        [implemented]
+├── llm/            # LLM query pipeline — see src/llm/README.md [Planner implemented]
+└── pipeline.py     # ETL entry point — download + layer orchestration
 data/
 ├── raw/            # Downloaded zips (git-ignored)
 └── gtfs/           # Extracted GTFS CSVs (git-ignored)
 queries/            # Cypher query library (one folder per layer)
 tests/
-demos/              # demos for presenting in class
+demos/              # Jupyter demo notebooks
 ```
 
 ---
@@ -133,7 +150,7 @@ DEPENDENCIES = {
 
 **Four rules to follow:**
 
-1. **Config** — never import config constants at module level. Always call `get_config()` inside a function. Module-level imports raise at startup without a `.env` and break `--download-only`.
+1. **Config** — never import config constants at module level. Always call `get_config()` inside a function.
 ```python
 # ✅ correct
 def run(...):
@@ -145,7 +162,7 @@ from src.common.config import WMATA_API_KEY
 
 2. **Neo4jManager** — instantiate inside `run()`, never at module level.
 
-3. **Validators** — add pre- and post-load checks in `src/common/validators/` following `fare_zones.py`. Pre-load at the end of transform (before any writes), post-load at the end of load (after all writes).
+3. **Validators** — add pre- and post-load checks in `src/common/validators/` following `fare_zones.py`.
 
 4. **Cypher** — put `.cypher` files under `queries/<layer>/` and load them with the `load_query()` pattern from `queries/README.md`.
 
