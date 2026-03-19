@@ -84,4 +84,8 @@ line-ending              = "auto"
 [tool.pytest.ini_options]
 testpaths     = ["tests"]
 pythonpath    = ["."]          # makes src.* importable without installing the package
-addopts       = "-ra -q --cov=src --cov-report=term-missing"
+addopts       = "-ra -q --cov=src --cov-report=term-missing -m 'not slow'"
+
+markers = [
+    "slow: marks tests that run against real GTFS data or require significant I/O (run with -m slow)",
+]

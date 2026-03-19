@@ -232,6 +232,7 @@ class TestTransformValidationGate:
 # ═══════════════════════════════════════════════════════════════
 
 
+@pytest.mark.slow
 def test_transform_on_real_gtfs(real_stops_df, real_fare_leg_df):
     """Full transform run against actual WMATA GTFS files."""
     # Use a complete fare_products fixture that includes all 5 logical products
@@ -290,4 +291,11 @@ def test_transform_on_real_gtfs(real_stops_df, real_fare_leg_df):
     assert len(result.station_zones) == 98
     assert len(result.gate_zones) == 240
     assert len(result.fare_products) == 5  # 5 logical nodes
-    assert len(result.fare_leg_rules) == 4  # 4 unique leg_group_ids
+    # fare_leg_rules has one row per unique OD pair rule_id (not per leg_group_id).
+    # Real WMATA feed: ~9,506 rail OD pairs + 3 bus rules = 9,509 total.
+    assert len(result.fare_leg_rules) == 9509
+    # Verify all four expected network types are present
+    networks = set(result.fare_leg_rules["network_id"].tolist())
+    assert "metrorail" in networks
+    assert "metrobus_regular" in networks
+    assert "metrobus_express" in networks
