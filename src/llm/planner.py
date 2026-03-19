@@ -96,9 +96,14 @@ _DOMAIN_WEIGHTS: dict[str, int] = {
 
 # Compile all signal patterns once at module load.
 # re.escape handles multi-word signals ("behind schedule") safely.
+# Prefix matching (leading \b only, no trailing \b) means each signal matches
+# all morphological variants — "propagate" catches "propagating", "propagation",
+# "propagates"; "delay" catches "delays", "delayed", "delaying"; "cancel" catches
+# "cancelled", "cancellation", "cancellations". The leading \b still prevents
+# false positives mid-word (e.g. "propagate" will not match "unpropagated").
 _COMPILED_SIGNALS: dict[str, list[re.Pattern]] = {
     domain: [
-        re.compile(r"\b" + re.escape(signal) + r"\b", re.IGNORECASE)
+        re.compile(r"\b" + re.escape(signal), re.IGNORECASE)
         for signal in signals
     ]
     for domain, signals in _DOMAIN_SIGNALS.items()
