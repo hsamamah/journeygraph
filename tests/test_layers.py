@@ -63,7 +63,8 @@ def test_with_deps_accessibility_pulls_physical():
 def test_with_deps_interruption_pulls_service_schedule():
     result = resolve_layers([Layer.INTERRUPTION], with_deps=True)
     assert Layer.SERVICE_SCHEDULE in result
-    assert Layer.PHYSICAL not in result  # interruption depends only on service_schedule
+    assert Layer.PHYSICAL in result  # service_schedule depends on physical → transitive
+    assert result.index(Layer.PHYSICAL) < result.index(Layer.SERVICE_SCHEDULE)
     assert result.index(Layer.SERVICE_SCHEDULE) < result.index(Layer.INTERRUPTION)
 
 
