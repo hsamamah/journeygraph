@@ -44,9 +44,9 @@ Performance:
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
+import hashlib
 
 import pandas as pd
 
@@ -56,30 +56,30 @@ log = get_logger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-DELAY_THRESHOLD = 300   # seconds (5 minutes) — Rule 2
-SEVERE_DELAY    = 900   # seconds (15 minutes)
+DELAY_THRESHOLD = 300  # seconds (5 minutes) — Rule 2
+SEVERE_DELAY = 900  # seconds (15 minutes)
 
 # ServiceAlert effect → Interruption type mapping (Rule 4)
 # OTHER_EFFECT mapped to service_change — WMATA uses it for miscellaneous
 # service modifications that don't fit named categories.
 # See CONVENTIONS.md → "ServiceAlert Effect Mapping"
 EFFECT_TYPE_MAP = {
-    "NO_SERVICE":          "cancellation",
-    "REDUCED_SERVICE":     "service_change",
-    "SIGNIFICANT_DELAYS":  "delay",
-    "DETOUR":              "detour",
-    "MODIFIED_SERVICE":    "service_change",
-    "STOP_MOVED":          "service_change",
+    "NO_SERVICE": "cancellation",
+    "REDUCED_SERVICE": "service_change",
+    "SIGNIFICANT_DELAYS": "delay",
+    "DETOUR": "detour",
+    "MODIFIED_SERVICE": "service_change",
+    "STOP_MOVED": "service_change",
     "ACCESSIBILITY_ISSUE": "accessibility",
-    "OTHER_EFFECT":        "service_change",
+    "OTHER_EFFECT": "service_change",
 }
 
 # Interruption type → Neo4j multi-label
 TYPE_LABEL_MAP = {
-    "cancellation":  "Cancellation",
-    "delay":         "Delay",
-    "skip":          "Skip",
-    "detour":        "Detour",
+    "cancellation": "Cancellation",
+    "delay": "Delay",
+    "skip": "Skip",
+    "detour": "Detour",
     "service_change": "ServiceChange",
     "accessibility": "Accessibility",
 }
@@ -93,22 +93,22 @@ class InterruptionTransformResult:
     """Clean DataFrames ready for Neo4j ingestion."""
 
     # Tier 1 — Raw source nodes
-    trip_updates: pd.DataFrame        # with dedup_hash added
+    trip_updates: pd.DataFrame  # with dedup_hash added
     stop_time_updates: pd.DataFrame
     service_alerts: pd.DataFrame
     entity_selectors: pd.DataFrame
 
     # Tier 2 — Normalized Interruption nodes
-    interruptions: pd.DataFrame       # interruption_id, type, label, cause, effect,
-                                      # severity, start_time, description, date
+    interruptions: pd.DataFrame  # interruption_id, type, label, cause, effect,
+    # severity, start_time, description, date
 
     # Tier 2→1 links
     interruption_sources: pd.DataFrame  # interruption_id, source_entity_id, source_type
 
     # Tier 2→Service layer links (AFFECTS_*)
-    affects_trip: pd.DataFrame        # interruption_id, trip_id
-    affects_route: pd.DataFrame       # interruption_id, route_id
-    affects_stop: pd.DataFrame        # interruption_id, stop_id
+    affects_trip: pd.DataFrame  # interruption_id, trip_id
+    affects_route: pd.DataFrame  # interruption_id, route_id
+    affects_stop: pd.DataFrame  # interruption_id, stop_id
 
     # Feed info (passed through)
     feed_info: pd.DataFrame | None
@@ -146,24 +146,27 @@ def _compute_dedup_hashes(
             ["parent_entity_id", "stop_sequence"], na_position="last"
         ).copy()
         stu["_stop_state"] = (
-            stu["stop_sequence"].fillna("").astype(str) + ":"
-            + stu["schedule_relationship"].fillna("").astype(str) + ":"
-            + stu["arrival_delay"].fillna("").astype(str) + ":"
+            stu["stop_sequence"].fillna("").astype(str)
+            + ":"
+            + stu["schedule_relationship"].fillna("").astype(str)
+            + ":"
+            + stu["arrival_delay"].fillna("").astype(str)
+            + ":"
             + stu["departure_delay"].fillna("").astype(str)
         )
         stop_strings = (
             stu.groupby("parent_entity_id")["_stop_state"]
             .apply("|".join)
             .reset_index()
-            .rename(columns={
-                "parent_entity_id": "feed_entity_id",
-                "_stop_state": "_stop_states",
-            })
+            .rename(
+                columns={
+                    "parent_entity_id": "feed_entity_id",
+                    "_stop_state": "_stop_states",
+                }
+            )
         )
     else:
-        stop_strings = pd.DataFrame(
-            columns=["feed_entity_id", "_stop_states"]
-        )
+        stop_strings = pd.DataFrame(columns=["feed_entity_id", "_stop_states"])
 
     # Step 2: merge stop state strings onto trip_updates — one join
     tu = trip_updates.copy()
@@ -174,10 +177,14 @@ def _compute_dedup_hashes(
     # fillna("") before astype(str) prevents NaN columns from producing
     # float NaN in the concatenated string, which would cause encode() to fail.
     tu["_raw"] = (
-        tu["trip_id"].fillna("").astype(str) + "|"
-        + tu["start_date"].fillna("").astype(str) + "|"
-        + tu["schedule_relationship"].fillna("").astype(str) + "|"
-        + tu["delay"].fillna("").astype(str) + "|"
+        tu["trip_id"].fillna("").astype(str)
+        + "|"
+        + tu["start_date"].fillna("").astype(str)
+        + "|"
+        + tu["schedule_relationship"].fillna("").astype(str)
+        + "|"
+        + tu["delay"].fillna("").astype(str)
+        + "|"
         + tu["_stop_states"]
     ).fillna("")  # guard: left merge can produce NaN if feed_entity_id unmatched
 
@@ -217,30 +224,46 @@ def _apply_trip_update_rules(
 
     # ── Rule 1: CANCELED → Cancellation ──────────────────────────────────────
 
-    canceled = trip_updates[
-        trip_updates["schedule_relationship"] == "CANCELED"
-    ].copy()
+    canceled = trip_updates[trip_updates["schedule_relationship"] == "CANCELED"].copy()
 
     if not canceled.empty:
-        canceled["interruption_id"]   = "int_tu_" + canceled["feed_entity_id"]
+        canceled["interruption_id"] = "int_tu_" + canceled["feed_entity_id"]
         canceled["interruption_type"] = "cancellation"
-        canceled["label"]             = "Cancellation"
-        canceled["cause"]             = None
-        canceled["effect"]            = "NO_SERVICE"
-        canceled["severity"]          = "SEVERE"
-        canceled["end_time"]          = None
-        canceled["description"]       = "Trip " + canceled["trip_id"].astype(str) + " cancelled"
+        canceled["label"] = "Cancellation"
+        canceled["cause"] = None
+        canceled["effect"] = "NO_SERVICE"
+        canceled["severity"] = "SEVERE"
+        canceled["end_time"] = None
+        canceled["description"] = (
+            "Trip " + canceled["trip_id"].astype(str) + " cancelled"
+        )
 
-        int_parts.append(canceled[[
-            "interruption_id", "interruption_type", "label", "cause", "effect",
-            "severity", "timestamp", "end_time", "description", "start_date",
-        ]].rename(columns={"timestamp": "start_time", "start_date": "date"}))
+        int_parts.append(
+            canceled[
+                [
+                    "interruption_id",
+                    "interruption_type",
+                    "label",
+                    "cause",
+                    "effect",
+                    "severity",
+                    "timestamp",
+                    "end_time",
+                    "description",
+                    "start_date",
+                ]
+            ].rename(columns={"timestamp": "start_time", "start_date": "date"})
+        )
 
-        src_parts.append(pd.DataFrame({
-            "interruption_id":  canceled["interruption_id"].values,
-            "source_entity_id": canceled["feed_entity_id"].values,
-            "source_type":      "TripUpdate",
-        }))
+        src_parts.append(
+            pd.DataFrame(
+                {
+                    "interruption_id": canceled["interruption_id"].values,
+                    "source_entity_id": canceled["feed_entity_id"].values,
+                    "source_type": "TripUpdate",
+                }
+            )
+        )
 
         with_trip = canceled[canceled["trip_id"].notna()]
         if not with_trip.empty:
@@ -259,30 +282,49 @@ def _apply_trip_update_rules(
     ].copy()
 
     if not delayed.empty:
-        delayed["interruption_id"]   = "int_tu_" + delayed["feed_entity_id"]
+        delayed["interruption_id"] = "int_tu_" + delayed["feed_entity_id"]
         delayed["interruption_type"] = "delay"
-        delayed["label"]             = "Delay"
-        delayed["cause"]             = None
-        delayed["effect"]            = "SIGNIFICANT_DELAYS"
-        delayed["severity"]          = delayed["delay"].apply(
+        delayed["label"] = "Delay"
+        delayed["cause"] = None
+        delayed["effect"] = "SIGNIFICANT_DELAYS"
+        delayed["severity"] = delayed["delay"].apply(
             lambda d: "SEVERE" if d >= SEVERE_DELAY else "WARNING"
         )
-        delayed["end_time"]    = None
+        delayed["end_time"] = None
         delayed["description"] = (
-            "Trip " + delayed["trip_id"].astype(str)
-            + " delayed " + delayed["delay"].astype(str) + "s"
+            "Trip "
+            + delayed["trip_id"].astype(str)
+            + " delayed "
+            + delayed["delay"].astype(str)
+            + "s"
         )
 
-        int_parts.append(delayed[[
-            "interruption_id", "interruption_type", "label", "cause", "effect",
-            "severity", "timestamp", "end_time", "description", "start_date",
-        ]].rename(columns={"timestamp": "start_time", "start_date": "date"}))
+        int_parts.append(
+            delayed[
+                [
+                    "interruption_id",
+                    "interruption_type",
+                    "label",
+                    "cause",
+                    "effect",
+                    "severity",
+                    "timestamp",
+                    "end_time",
+                    "description",
+                    "start_date",
+                ]
+            ].rename(columns={"timestamp": "start_time", "start_date": "date"})
+        )
 
-        src_parts.append(pd.DataFrame({
-            "interruption_id":  delayed["interruption_id"].values,
-            "source_entity_id": delayed["feed_entity_id"].values,
-            "source_type":      "TripUpdate",
-        }))
+        src_parts.append(
+            pd.DataFrame(
+                {
+                    "interruption_id": delayed["interruption_id"].values,
+                    "source_entity_id": delayed["feed_entity_id"].values,
+                    "source_type": "TripUpdate",
+                }
+            )
+        )
 
         with_trip = delayed[delayed["trip_id"].notna()]
         if not with_trip.empty:
@@ -304,38 +346,58 @@ def _apply_trip_update_rules(
 
         if not skipped.empty:
             # Join parent context in one merge — no iterrows()
-            parent_cols = trip_updates[[
-                "feed_entity_id", "start_date", "timestamp", "trip_id", "route_id"
-            ]].rename(columns={"feed_entity_id": "parent_entity_id"})
+            parent_cols = trip_updates[
+                ["feed_entity_id", "start_date", "timestamp", "trip_id", "route_id"]
+            ].rename(columns={"feed_entity_id": "parent_entity_id"})
 
             skipped = skipped.merge(parent_cols, on="parent_entity_id", how="left")
 
             skipped["interruption_id"] = (
                 "int_skip_"
-                + skipped["parent_entity_id"].astype(str) + "_"
+                + skipped["parent_entity_id"].astype(str)
+                + "_"
                 + skipped["stop_sequence"].astype(str)
             )
             skipped["interruption_type"] = "skip"
-            skipped["label"]             = "Skip"
-            skipped["cause"]             = None
-            skipped["effect"]            = "STOP_MOVED"
-            skipped["severity"]          = "WARNING"
-            skipped["end_time"]          = None
+            skipped["label"] = "Skip"
+            skipped["cause"] = None
+            skipped["effect"] = "STOP_MOVED"
+            skipped["severity"] = "WARNING"
+            skipped["end_time"] = None
             skipped["description"] = (
-                "Stop " + skipped["stop_id"].astype(str)
-                + " skipped (seq " + skipped["stop_sequence"].astype(str) + ")"
+                "Stop "
+                + skipped["stop_id"].astype(str)
+                + " skipped (seq "
+                + skipped["stop_sequence"].astype(str)
+                + ")"
             )
 
-            int_parts.append(skipped[[
-                "interruption_id", "interruption_type", "label", "cause", "effect",
-                "severity", "timestamp", "end_time", "description", "start_date",
-            ]].rename(columns={"timestamp": "start_time", "start_date": "date"}))
+            int_parts.append(
+                skipped[
+                    [
+                        "interruption_id",
+                        "interruption_type",
+                        "label",
+                        "cause",
+                        "effect",
+                        "severity",
+                        "timestamp",
+                        "end_time",
+                        "description",
+                        "start_date",
+                    ]
+                ].rename(columns={"timestamp": "start_time", "start_date": "date"})
+            )
 
-            src_parts.append(pd.DataFrame({
-                "interruption_id":  skipped["interruption_id"].values,
-                "source_entity_id": skipped["parent_entity_id"].values,
-                "source_type":      "TripUpdate",
-            }))
+            src_parts.append(
+                pd.DataFrame(
+                    {
+                        "interruption_id": skipped["interruption_id"].values,
+                        "source_entity_id": skipped["parent_entity_id"].values,
+                        "source_type": "TripUpdate",
+                    }
+                )
+            )
 
             with_trip = skipped[skipped["trip_id"].notna()]
             if not with_trip.empty:
@@ -348,20 +410,18 @@ def _apply_trip_update_rules(
     # ── Assemble outputs ──────────────────────────────────────────────────────
 
     interruptions = (
-        pd.concat(int_parts, ignore_index=True)
-        if int_parts else _empty_interruptions()
+        pd.concat(int_parts, ignore_index=True) if int_parts else _empty_interruptions()
     )
-    sources = (
-        pd.concat(src_parts, ignore_index=True)
-        if src_parts else _empty_sources()
-    )
+    sources = pd.concat(src_parts, ignore_index=True) if src_parts else _empty_sources()
     affects_trip = (
         pd.concat(trip_parts, ignore_index=True).drop_duplicates()
-        if trip_parts else pd.DataFrame(columns=["interruption_id", "trip_id"])
+        if trip_parts
+        else pd.DataFrame(columns=["interruption_id", "trip_id"])
     )
     affects_route = (
         pd.concat(route_parts, ignore_index=True).drop_duplicates()
-        if route_parts else pd.DataFrame(columns=["interruption_id", "route_id"])
+        if route_parts
+        else pd.DataFrame(columns=["interruption_id", "route_id"])
     )
 
     return interruptions, sources, affects_trip, affects_route
@@ -381,9 +441,7 @@ def _apply_alert_rules(
       interruptions, sources, affects_trip, affects_route, affects_stop
     """
     # Filter to mapped effects only
-    mapped = service_alerts[
-        service_alerts["effect"].isin(EFFECT_TYPE_MAP)
-    ].copy()
+    mapped = service_alerts[service_alerts["effect"].isin(EFFECT_TYPE_MAP)].copy()
 
     if mapped.empty:
         return (
@@ -395,13 +453,15 @@ def _apply_alert_rules(
         )
 
     # Build Interruption rows — vectorised
-    mapped["interruption_id"]   = "int_sa_" + mapped["feed_entity_id"]
+    mapped["interruption_id"] = "int_sa_" + mapped["feed_entity_id"]
     mapped["interruption_type"] = mapped["effect"].map(EFFECT_TYPE_MAP)
-    mapped["label"]             = mapped["interruption_type"].map(TYPE_LABEL_MAP).fillna("ServiceChange")
-    mapped["end_time"]          = mapped["active_period_end"]
-    mapped["start_time"]        = mapped["active_period_start"]
-    mapped["description"]       = mapped["header_text"]
-    mapped["severity"]          = mapped["severity_level"].fillna("UNKNOWN_SEVERITY")
+    mapped["label"] = (
+        mapped["interruption_type"].map(TYPE_LABEL_MAP).fillna("ServiceChange")
+    )
+    mapped["end_time"] = mapped["active_period_end"]
+    mapped["start_time"] = mapped["active_period_start"]
+    mapped["description"] = mapped["header_text"]
+    mapped["severity"] = mapped["severity_level"].fillna("UNKNOWN_SEVERITY")
 
     # Derive date from active_period_start (epoch → YYYYMMDD) — vectorised
     def _epoch_to_date(series: pd.Series) -> pd.Series:
@@ -410,22 +470,35 @@ def _apply_alert_rules(
                 return None
             try:
                 return datetime.fromtimestamp(int(v)).strftime("%Y%m%d")
-            except (ValueError, TypeError, OSError):
+            except ValueError, TypeError, OSError:
                 return None
+
         return series.apply(_convert)
 
     mapped["date"] = _epoch_to_date(mapped["active_period_start"])
 
-    interruptions = mapped[[
-        "interruption_id", "interruption_type", "label", "cause", "effect",
-        "severity", "start_time", "end_time", "description", "date",
-    ]].copy()
+    interruptions = mapped[
+        [
+            "interruption_id",
+            "interruption_type",
+            "label",
+            "cause",
+            "effect",
+            "severity",
+            "start_time",
+            "end_time",
+            "description",
+            "date",
+        ]
+    ].copy()
 
-    sources = pd.DataFrame({
-        "interruption_id":  mapped["interruption_id"].values,
-        "source_entity_id": mapped["feed_entity_id"].values,
-        "source_type":      "ServiceAlert",
-    })
+    sources = pd.DataFrame(
+        {
+            "interruption_id": mapped["interruption_id"].values,
+            "source_entity_id": mapped["feed_entity_id"].values,
+            "source_type": "ServiceAlert",
+        }
+    )
 
     # Derive AFFECTS_* from EntitySelectors — one merge instead of per-alert loop
     if entity_selectors.empty:
@@ -468,10 +541,20 @@ def _apply_alert_rules(
 
 
 def _empty_interruptions() -> pd.DataFrame:
-    return pd.DataFrame(columns=[
-        "interruption_id", "interruption_type", "label", "cause", "effect",
-        "severity", "start_time", "end_time", "description", "date",
-    ])
+    return pd.DataFrame(
+        columns=[
+            "interruption_id",
+            "interruption_type",
+            "label",
+            "cause",
+            "effect",
+            "severity",
+            "start_time",
+            "end_time",
+            "description",
+            "date",
+        ]
+    )
 
 
 def _empty_sources() -> pd.DataFrame:
@@ -487,11 +570,11 @@ def run(raw: dict[str, pd.DataFrame]) -> InterruptionTransformResult:
     """
     log.info("interruption transform: starting")
 
-    trip_updates      = raw["trip_updates"]
+    trip_updates = raw["trip_updates"]
     stop_time_updates = raw["stop_time_updates"]
-    service_alerts    = raw["service_alerts"]
-    entity_selectors  = raw["entity_selectors"]
-    feed_info         = raw.get("feed_info")
+    service_alerts = raw["service_alerts"]
+    entity_selectors = raw["entity_selectors"]
+    feed_info = raw.get("feed_info")
 
     # ── Dedup hashes on TripUpdates ──────────────────────────────────────────
     #
@@ -508,7 +591,8 @@ def run(raw: dict[str, pd.DataFrame]) -> InterruptionTransformResult:
         trip_updates = trip_updates.drop_duplicates(subset=["dedup_hash"])
         log.info(
             "interruption transform: TripUpdate dedup %d → %d",
-            before, len(trip_updates),
+            before,
+            len(trip_updates),
         )
 
     # ── ServiceAlert dedup on feed_entity_id ─────────────────────────────────
@@ -518,7 +602,8 @@ def run(raw: dict[str, pd.DataFrame]) -> InterruptionTransformResult:
         service_alerts = service_alerts.drop_duplicates(subset=["feed_entity_id"])
         log.info(
             "interruption transform: ServiceAlert dedup %d → %d",
-            before, len(service_alerts),
+            before,
+            len(service_alerts),
         )
 
     # ── Apply transform rules ────────────────────────────────────────────────
@@ -532,23 +617,25 @@ def run(raw: dict[str, pd.DataFrame]) -> InterruptionTransformResult:
 
     # Combine Tier 2 results
     interruptions = pd.concat([tu_ints, sa_ints], ignore_index=True)
-    sources       = pd.concat([tu_srcs, sa_srcs], ignore_index=True)
-    affects_trip  = pd.concat([tu_trips, sa_trips], ignore_index=True).drop_duplicates()
-    affects_route = pd.concat([tu_routes, sa_routes], ignore_index=True).drop_duplicates()
-    affects_stop  = sa_stops.drop_duplicates() if not sa_stops.empty else sa_stops
+    sources = pd.concat([tu_srcs, sa_srcs], ignore_index=True)
+    affects_trip = pd.concat([tu_trips, sa_trips], ignore_index=True).drop_duplicates()
+    affects_route = pd.concat(
+        [tu_routes, sa_routes], ignore_index=True
+    ).drop_duplicates()
+    affects_stop = sa_stops.drop_duplicates() if not sa_stops.empty else sa_stops
 
     # ── Stats ────────────────────────────────────────────────────────────────
 
     stats = {
-        "trip_updates":         len(trip_updates),
-        "stop_time_updates":    len(stop_time_updates),
-        "service_alerts":       len(service_alerts),
-        "entity_selectors":     len(entity_selectors),
-        "interruptions":        len(interruptions),
+        "trip_updates": len(trip_updates),
+        "stop_time_updates": len(stop_time_updates),
+        "service_alerts": len(service_alerts),
+        "entity_selectors": len(entity_selectors),
+        "interruptions": len(interruptions),
         "interruption_sources": len(sources),
-        "affects_trip":         len(affects_trip),
-        "affects_route":        len(affects_route),
-        "affects_stop":         len(affects_stop),
+        "affects_trip": len(affects_trip),
+        "affects_route": len(affects_route),
+        "affects_stop": len(affects_stop),
     }
     for k, v in stats.items():
         log.info("interruption transform: %-25s %6d rows", k, v)
@@ -561,6 +648,7 @@ def run(raw: dict[str, pd.DataFrame]) -> InterruptionTransformResult:
 
     log.info("interruption transform: running pre-load validation")
     from src.common.validators.interruption import validate_pre_load
+
     validation = validate_pre_load(
         trip_updates=trip_updates,
         stop_time_updates=stop_time_updates,

@@ -43,7 +43,6 @@ import pandas as pd
 
 from src.common.validators.base import ValidationResult
 
-
 # ── Pre-load validator ────────────────────────────────────────────────────────
 
 
@@ -73,9 +72,7 @@ def validate_pre_load(
     if not dup_trips.empty:
         n = dup_trips["trip_id"].nunique()
         examples = dup_trips["trip_id"].unique()[:5].tolist()
-        result.fail(
-            f"{n} trip_id(s) appear more than once in trips.txt: {examples}"
-        )
+        result.fail(f"{n} trip_id(s) appear more than once in trips.txt: {examples}")
     else:
         result.note(f"No duplicate trip_ids ({len(trips)} trips)")
 
@@ -87,9 +84,7 @@ def validate_pre_load(
 
     if "shape_id" in trips.columns and "route_id" in trips.columns:
         shape_routes = (
-            trips.dropna(subset=["shape_id"])
-            .groupby("shape_id")["route_id"]
-            .nunique()
+            trips.dropna(subset=["shape_id"]).groupby("shape_id")["route_id"].nunique()
         )
         multi_route_shapes = shape_routes[shape_routes > 1]
         if not multi_route_shapes.empty:
@@ -160,7 +155,9 @@ def validate_pre_load(
     # Warn rather than block — WMATA may legitimately omit shape for some trips.
 
     if "shape_id" in trips.columns:
-        no_shape = trips[trips["shape_id"].isna() | (trips["shape_id"].astype(str).str.strip() == "")]
+        no_shape = trips[
+            trips["shape_id"].isna() | (trips["shape_id"].astype(str).str.strip() == "")
+        ]
         if not no_shape.empty:
             result.warn(
                 f"{len(no_shape)} trip(s) have no shape_id — cannot derive "
@@ -192,8 +189,7 @@ def validate_pre_load(
             )
         else:
             result.note(
-                f"All {len(r_patterns)} _R maintenance patterns fit within "
-                f"feed window"
+                f"All {len(r_patterns)} _R maintenance patterns fit within feed window"
             )
 
     return result
@@ -240,7 +236,9 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
             RETURN count(*) AS n
             """,
             lambda n: n == 0,
-            lambda n: f"{n} shape_id value(s) appear on more than one RoutePattern node",
+            lambda n: (
+                f"{n} shape_id value(s) appear on more than one RoutePattern node"
+            ),
             "No duplicate shape_id values on RoutePattern nodes",
         ),
         (
@@ -264,7 +262,9 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
             RETURN count(*) AS n
             """,
             lambda n: n == 0,
-            lambda n: f"{n} service_id value(s) appear on more than one ServicePattern node",
+            lambda n: (
+                f"{n} service_id value(s) appear on more than one ServicePattern node"
+            ),
             "No duplicate service_id values on ServicePattern nodes",
         ),
         (
@@ -315,7 +315,9 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
             RETURN count(*) AS n
             """,
             lambda n: n == 0,
-            lambda n: f"{n} (ServicePattern, Date) pair(s) have duplicate ACTIVE_ON relationships",
+            lambda n: (
+                f"{n} (ServicePattern, Date) pair(s) have duplicate ACTIVE_ON relationships"
+            ),
             "No duplicate ACTIVE_ON relationships",
         ),
     ]
@@ -343,8 +345,8 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
 
     if record:
         earliest = record["earliest"]
-        latest   = record["latest"]
-        n_dates  = record["n"]
+        latest = record["latest"]
+        n_dates = record["n"]
 
         with neo4j_manager.driver.session() as session:
             fi = session.run(
@@ -357,7 +359,7 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
 
         if fi:
             feed_start = str(fi["feed_start"])
-            feed_end   = str(fi["feed_end"])
+            feed_end = str(fi["feed_end"])
 
             if earliest < feed_start:
                 result.warn(
@@ -371,9 +373,7 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
                     f"with feed window {feed_start}–{feed_end}"
                 )
         else:
-            result.warn(
-                "Could not verify Date range — no FeedInfo node found in graph"
-            )
+            result.warn("Could not verify Date range — no FeedInfo node found in graph")
 
     # ── Check 15: soft node counts ────────────────────────────────────────────
     #
@@ -388,11 +388,26 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
         ("MATCH (rp:RoutePattern)  RETURN count(rp) AS n", "RoutePattern"),
         ("MATCH (t:Trip)           RETURN count(t) AS n", "Trip"),
         ("MATCH (sp:ServicePattern) RETURN count(sp) AS n", "ServicePattern"),
-        ("MATCH (sp:ServicePattern:Weekday)     RETURN count(sp) AS n", "ServicePattern:Weekday"),
-        ("MATCH (sp:ServicePattern:Saturday)    RETURN count(sp) AS n", "ServicePattern:Saturday"),
-        ("MATCH (sp:ServicePattern:Sunday)      RETURN count(sp) AS n", "ServicePattern:Sunday"),
-        ("MATCH (sp:ServicePattern:Holiday)     RETURN count(sp) AS n", "ServicePattern:Holiday"),
-        ("MATCH (sp:ServicePattern:Maintenance) RETURN count(sp) AS n", "ServicePattern:Maintenance"),
+        (
+            "MATCH (sp:ServicePattern:Weekday)     RETURN count(sp) AS n",
+            "ServicePattern:Weekday",
+        ),
+        (
+            "MATCH (sp:ServicePattern:Saturday)    RETURN count(sp) AS n",
+            "ServicePattern:Saturday",
+        ),
+        (
+            "MATCH (sp:ServicePattern:Sunday)      RETURN count(sp) AS n",
+            "ServicePattern:Sunday",
+        ),
+        (
+            "MATCH (sp:ServicePattern:Holiday)     RETURN count(sp) AS n",
+            "ServicePattern:Holiday",
+        ),
+        (
+            "MATCH (sp:ServicePattern:Maintenance) RETURN count(sp) AS n",
+            "ServicePattern:Maintenance",
+        ),
         ("MATCH (d:Date)           RETURN count(d) AS n", "Date"),
     ]
 

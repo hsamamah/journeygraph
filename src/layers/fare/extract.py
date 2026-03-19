@@ -46,7 +46,11 @@ def run(gtfs_data: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     for key in OPTIONAL:
         if key in gtfs_data:
             extracted[key] = gtfs_data[key].copy()
-            log.info("fare extract: optional file '%s' found (%d rows)", key, len(gtfs_data[key]))
+            log.info(
+                "fare extract: optional file '%s' found (%d rows)",
+                key,
+                len(gtfs_data[key]),
+            )
         else:
             log.warning("fare extract: optional file '%s' not present in feed", key)
 

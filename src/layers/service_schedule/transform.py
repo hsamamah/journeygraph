@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from src.common.logger import get_logger
-from src.common.utils import normalize_gtfs_time, safe_float, safe_int
+from src.common.utils import safe_int
 
 log = get_logger(__name__)
 
@@ -269,7 +269,9 @@ def _transform_routes(routes_raw: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     df = routes_raw[present].copy()
 
     # Vectorised safe_int — replaces apply(safe_int) on route_type
-    df["route_type"] = pd.to_numeric(df["route_type"], errors="coerce").astype("float64")
+    df["route_type"] = pd.to_numeric(df["route_type"], errors="coerce").astype(
+        "float64"
+    )
     df["mode"] = df["route_type"].map(ROUTE_TYPE_MODE)
 
     # Warn on unknown route_types before defaulting to "bus"
@@ -452,12 +454,12 @@ def _normalize_gtfs_time_vec(series: pd.Series) -> pd.Series:
         return pd.Series(result, index=series.index)
 
     # to_numpy(dtype="U8") pads to exactly 8 chars — guaranteed by GTFS format
-    sv   = series[valid_mask].to_numpy(dtype="U8")
+    sv = series[valid_mask].to_numpy(dtype="U8")
     flat = sv.view(np.int32)  # each U1 char → int32 value
 
     # Fixed digit positions: HH=0,1 | MM=3,4 | SS=6,7
-    h   = (flat[0::8] - 48) * 10 + (flat[1::8] - 48)
-    m   = (flat[3::8] - 48) * 10 + (flat[4::8] - 48)
+    h = (flat[0::8] - 48) * 10 + (flat[1::8] - 48)
+    m = (flat[3::8] - 48) * 10 + (flat[4::8] - 48)
     sec = (flat[6::8] - 48) * 10 + (flat[7::8] - 48)
     result[valid_mask.to_numpy()] = h * 3600 + m * 60 + sec
 
@@ -501,13 +503,13 @@ def _transform_scheduled_at(
     st["mode"] = st["trip_id"].map(trip_mode_map).fillna("bus")
 
     # Times: vectorised HH:MM:SS → seconds (replaces two apply() calls)
-    st["arrival_time"]   = _normalize_gtfs_time_vec(st["arrival_time"])
+    st["arrival_time"] = _normalize_gtfs_time_vec(st["arrival_time"])
     st["departure_time"] = _normalize_gtfs_time_vec(st["departure_time"])
 
     # stop_sequence: safe_int → pd.to_numeric (replaces one apply() call)
-    st["stop_sequence"] = pd.to_numeric(
-        st["stop_sequence"], errors="coerce"
-    ).astype("float64")
+    st["stop_sequence"] = pd.to_numeric(st["stop_sequence"], errors="coerce").astype(
+        "float64"
+    )
 
     # Rail carries shape_dist_traveled; bus carries timepoint
     if "shape_dist_traveled" not in st.columns:
@@ -519,9 +521,7 @@ def _transform_scheduled_at(
     st["shape_dist_traveled"] = pd.to_numeric(
         st["shape_dist_traveled"], errors="coerce"
     )
-    st["timepoint"] = pd.to_numeric(
-        st["timepoint"], errors="coerce"
-    ).astype("float64")
+    st["timepoint"] = pd.to_numeric(st["timepoint"], errors="coerce").astype("float64")
 
     rail_cols = [
         "trip_id",
@@ -543,7 +543,7 @@ def _transform_scheduled_at(
     ]
 
     rail = st[st["mode"] == "rail"][rail_cols].reset_index(drop=True)
-    bus  = st[st["mode"] == "bus"][bus_cols].reset_index(drop=True)
+    bus = st[st["mode"] == "bus"][bus_cols].reset_index(drop=True)
 
     return rail, bus
 
@@ -573,16 +573,18 @@ def _derive_pattern_stops(
     st = st.merge(rep, on="trip_id", how="inner")
 
     # Vectorised safe_int — replaces apply(safe_int) on stop_sequence
-    st["stop_sequence"] = pd.to_numeric(st["stop_sequence"], errors="coerce").astype("float64")
+    st["stop_sequence"] = pd.to_numeric(st["stop_sequence"], errors="coerce").astype(
+        "float64"
+    )
     st = st.sort_values(["shape_id", "stop_sequence"])
 
     # Mark terminus: idxmin/idxmax per group replaces per-shape_id for loop
     # Each shape_id contributes exactly one first and one last stop.
     st["is_terminus"] = False
     first_idx = st.groupby("shape_id")["stop_sequence"].idxmin()
-    last_idx  = st.groupby("shape_id")["stop_sequence"].idxmax()
+    last_idx = st.groupby("shape_id")["stop_sequence"].idxmax()
     st.loc[first_idx.dropna(), "is_terminus"] = True
-    st.loc[last_idx.dropna(),  "is_terminus"] = True
+    st.loc[last_idx.dropna(), "is_terminus"] = True
 
     return st[["shape_id", "stop_id", "stop_sequence", "is_terminus"]].reset_index(
         drop=True
@@ -606,7 +608,9 @@ def _derive_route_serves(
     trip_route = trips_raw[["trip_id", "route_id"]].drop_duplicates()
     route_mode = routes_raw[["route_id", "route_type"]].drop_duplicates()
     # Vectorised route_type → mode — replaces apply(lambda + safe_int)
-    route_mode["_rt_int"] = pd.to_numeric(route_mode["route_type"], errors="coerce").astype("Int64")
+    route_mode["_rt_int"] = pd.to_numeric(
+        route_mode["route_type"], errors="coerce"
+    ).astype("Int64")
     route_mode["mode"] = route_mode["_rt_int"].map(ROUTE_TYPE_MODE).fillna("bus")
 
     # Get unique (trip_id, stop_id) from stop_times, then join to route
