@@ -18,10 +18,14 @@ Current supported providers:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from neo4j_graphrag.llm import AnthropicLLM, LLMInterface
 
-from src.common.config import LLMConfig
 from src.common.logger import get_logger
+
+if TYPE_CHECKING:
+    from src.common.config import LLMConfig
 
 log = get_logger(__name__)
 

@@ -58,17 +58,22 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import yaml
 
 from src.common.logger import get_logger
-from src.common.neo4j_tools import Neo4jManager
 from src.common.paths import SLICES_DIR
+
+if TYPE_CHECKING:
+    from src.common.neo4j_tools import Neo4jManager
 
 log = get_logger(__name__)
 
 # Required fields in every YAML slice file.
-_REQUIRED_FIELDS: frozenset[str] = frozenset({"nodes", "relationships", "patterns", "warnings"})
+_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {"nodes", "relationships", "patterns", "warnings"}
+)
 
 
 # ── Data structures ───────────────────────────────────────────────────────────
@@ -78,9 +83,9 @@ _REQUIRED_FIELDS: frozenset[str] = frozenset({"nodes", "relationships", "pattern
 class RelationshipTriple:
     """A directed relationship triple parsed from a schema slice YAML."""
 
-    from_label: str   # source node label (primary label, no colon prefix)
-    rel_type: str     # relationship type name
-    to_label: str     # target node label (primary label, no colon prefix)
+    from_label: str  # source node label (primary label, no colon prefix)
+    rel_type: str  # relationship type name
+    to_label: str  # target node label (primary label, no colon prefix)
 
     def __str__(self) -> str:
         return f"(:{self.from_label})-[:{self.rel_type}]->(:{self.to_label})"
@@ -218,9 +223,7 @@ class SliceRegistry:
 
         yaml_files = sorted(SLICES_DIR.glob("*.yaml"))
         if not yaml_files:
-            raise RuntimeError(
-                f"No YAML slice files found in {SLICES_DIR}."
-            )
+            raise RuntimeError(f"No YAML slice files found in {SLICES_DIR}.")
 
         raw_slices: dict[str, dict] = {}
         for path in yaml_files:
@@ -263,9 +266,7 @@ class SliceRegistry:
                           Always raises regardless of strict mode.
         """
         try:
-            label_rows = neo4j.query(
-                "CALL db.labels() YIELD label RETURN label"
-            )
+            label_rows = neo4j.query("CALL db.labels() YIELD label RETURN label")
             rel_rows = neo4j.query(
                 "CALL db.relationshipTypes() YIELD relationshipType "
                 "RETURN relationshipType"

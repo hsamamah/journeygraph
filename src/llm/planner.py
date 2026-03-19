@@ -46,15 +46,18 @@ Usage:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
-from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from src.common.config import LLMConfig
 from src.common.logger import get_logger
 from src.llm.llm_factory import build_llm
 from src.llm.planner_output import PlannerAnchors, PlannerOutput
-from src.llm.slice_registry import SliceRegistry
+
+if TYPE_CHECKING:
+    from src.common.config import LLMConfig
+    from src.llm.slice_registry import SliceRegistry
 
 log = get_logger(__name__)
 
@@ -75,23 +78,37 @@ log = get_logger(__name__)
 
 _DOMAIN_SIGNALS: dict[str, set[str]] = {
     "delay_propagation": {
-        "delay", "delayed", "late", "behind schedule",
-        "propagate", "ripple", "downstream",
+        "delay",
+        "delayed",
+        "late",
+        "behind schedule",
+        "propagate",
+        "ripple",
+        "downstream",
     },
     "transfer_impact": {
-        "transfer", "interchange", "connection",
-        "missed", "cancelled", "cancellation",
+        "transfer",
+        "interchange",
+        "connection",
+        "missed",
+        "cancelled",
+        "cancellation",
     },
     "accessibility": {
-        "elevator", "escalator", "accessible",
-        "wheelchair", "outage", "ada", "incident",
+        "elevator",
+        "escalator",
+        "accessible",
+        "wheelchair",
+        "outage",
+        "ada",
+        "incident",
     },
 }
 
 _DOMAIN_WEIGHTS: dict[str, int] = {
     "delay_propagation": 3,
-    "transfer_impact":   2,
-    "accessibility":     1,
+    "transfer_impact": 2,
+    "accessibility": 1,
 }
 
 # Compile all signal patterns once at module load.
@@ -102,10 +119,7 @@ _DOMAIN_WEIGHTS: dict[str, int] = {
 # "cancelled", "cancellation", "cancellations". The leading \b still prevents
 # false positives mid-word (e.g. "propagate" will not match "unpropagated").
 _COMPILED_SIGNALS: dict[str, list[re.Pattern]] = {
-    domain: [
-        re.compile(r"\b" + re.escape(signal), re.IGNORECASE)
-        for signal in signals
-    ]
+    domain: [re.compile(r"\b" + re.escape(signal), re.IGNORECASE) for signal in signals]
     for domain, signals in _DOMAIN_SIGNALS.items()
 }
 
@@ -114,8 +128,8 @@ _COMPILED_SIGNALS: dict[str, list[re.Pattern]] = {
 # without collapsing domain and slice key into the same concept.
 _SLICE_KEY_MAP: dict[str, str] = {
     "delay_propagation": "delay_propagation",
-    "transfer_impact":   "transfer_impact",
-    "accessibility":     "accessibility",
+    "transfer_impact": "transfer_impact",
+    "accessibility": "accessibility",
 }
 
 # Rejection message shown to users when Stage 1 scores zero across all domains.
@@ -151,15 +165,18 @@ _RETRY_NUDGE = "\n\nIMPORTANT: Your previous response could not be parsed as JSO
 
 # ── Stage 1 scoring result ────────────────────────────────────────────────────
 
+
 @dataclass
 class _Stage1Result:
     """Internal result of Stage 1 domain classification."""
-    domain: str | None          # winning domain, or None if all scores are zero
-    scores: dict[str, float]    # normalized score per domain (for --verbose)
+
+    domain: str | None  # winning domain, or None if all scores are zero
+    scores: dict[str, float]  # normalized score per domain (for --verbose)
     rejected: bool
 
 
 # ── Planner ───────────────────────────────────────────────────────────────────
+
 
 class Planner:
     """
@@ -218,8 +235,8 @@ class Planner:
             return self._build_rejected_output(stage1)
 
         # Stage 2: LLM call — only reached when Stage 1 succeeds
-        anchors, path, path_reasoning, anchor_notes, parse_warning = (
-            self._stage2_llm(query, stage1.domain)
+        anchors, path, path_reasoning, anchor_notes, parse_warning = self._stage2_llm(
+            query, stage1.domain
         )
 
         # Stage 3: assembly
@@ -313,9 +330,7 @@ class Planner:
         path_reasoning = parsed.get("path_reasoning") or None
         anchor_notes = parsed.get("anchor_notes") or None
 
-        log.debug(
-            "Stage 2 complete — path=%s anchors=%s", path, anchors
-        )
+        log.debug("Stage 2 complete — path=%s anchors=%s", path, anchors)
         return anchors, path, path_reasoning, anchor_notes, None
 
     def _invoke_llm(self, system_prompt: str, user_message: str) -> str:
@@ -380,6 +395,7 @@ class Planner:
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
 
+
 def _parse_json_response(raw: str) -> tuple[dict | None, str | None]:
     """
     Parse a raw LLM response string as JSON.
@@ -415,6 +431,7 @@ def _extract_anchors(raw_anchors: dict) -> PlannerAnchors:
     list items are silently dropped — the LLM occasionally returns a string
     instead of a single-element list.
     """
+
     def _to_str_list(value) -> list[str]:
         if isinstance(value, list):
             return [str(v) for v in value if v is not None]

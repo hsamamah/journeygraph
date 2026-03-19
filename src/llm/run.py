@@ -40,13 +40,16 @@ from __future__ import annotations
 
 import argparse
 import sys
+from typing import TYPE_CHECKING
 
 from src.common.config import get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.llm.planner import Planner
-from src.llm.planner_output import PlannerAnchors, PlannerOutput
 from src.llm.slice_registry import SliceRegistry
+
+if TYPE_CHECKING:
+    from src.llm.planner_output import PlannerOutput
 
 log = get_logger(__name__)
 
@@ -75,6 +78,7 @@ _DEMO_QUERIES: list[tuple[str, str]] = [
 
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
+
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -128,6 +132,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 # ── Output formatting ─────────────────────────────────────────────────────────
 
+
 def _fmt_compact(output: PlannerOutput) -> str:
     """
     One-line summary for default and REPL modes.
@@ -152,10 +157,7 @@ def _fmt_compact(output: PlannerOutput) -> str:
     if output.parse_warning:
         anchor_str += "  ⚠ parse_warning set"
 
-    return (
-        f"domain={output.domain}  path={output.path}\n"
-        f"anchors: {anchor_str}"
-    )
+    return f"domain={output.domain}  path={output.path}\nanchors: {anchor_str}"
 
 
 def _fmt_verbose(
@@ -177,14 +179,22 @@ def _fmt_verbose(
     if stage1_scores is not None:
         lines.append("─── Stage 1 — domain classifier ────────────────────────")
         for domain, score in sorted(stage1_scores.items()):
-            marker = "  ← selected" if (not output.rejected and domain == output.domain) else ""
+            marker = (
+                "  ← selected"
+                if (not output.rejected and domain == output.domain)
+                else ""
+            )
             lines.append(f"  {domain:<22} {score:.4f}{marker}")
 
     # Stage 2 raw response
     if raw_llm_response is not None:
         lines.append("─── Stage 2 — LLM raw response ─────────────────────────")
         # Truncate very long responses for readability
-        display = raw_llm_response if len(raw_llm_response) <= 400 else raw_llm_response[:400] + " …"
+        display = (
+            raw_llm_response
+            if len(raw_llm_response) <= 400
+            else raw_llm_response[:400] + " …"
+        )
         lines.append(f"  {display}")
 
     # PlannerOutput fields
@@ -200,7 +210,7 @@ def _fmt_verbose(
     if output.parse_warning:
         lines.append(f"  ⚠ parse_warning  : {output.parse_warning}")
     else:
-        lines.append(f"  parse_warning    : None")
+        lines.append("  parse_warning    : None")
 
     lines.append("  anchors:")
     lines.append(f"    stations       : {output.anchors.stations}")
@@ -212,6 +222,7 @@ def _fmt_verbose(
 
 
 # ── Query execution ───────────────────────────────────────────────────────────
+
 
 def _run_query(
     planner: Planner,
@@ -260,6 +271,7 @@ def _run_query(
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
 
+
 def _mode_default(planner: Planner, query: str, *, verbose: bool) -> None:
     """Single query, print result, exit."""
     _run_query(planner, query, verbose=verbose)
@@ -283,7 +295,7 @@ def _mode_demo(planner: Planner, *, verbose: bool) -> None:
     print(f"\n{'═' * 56}")
     print("Demo summary:")
     all_passed = True
-    for (expected, output), (query, _) in zip(results, _DEMO_QUERIES):
+    for (expected, output), (query, _) in zip(results, _DEMO_QUERIES, strict=True):
         if expected == "rejection":
             passed = output.rejected
         else:
@@ -307,7 +319,7 @@ def _mode_repl(planner: Planner, *, verbose: bool) -> None:
     while True:
         try:
             query = input("query> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             print("\nExiting.")
             break
 
@@ -322,6 +334,7 @@ def _mode_repl(planner: Planner, *, verbose: bool) -> None:
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
+
 
 def _startup(*, strict: bool) -> Planner:
     """
@@ -355,6 +368,7 @@ def _startup(*, strict: bool) -> Planner:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
