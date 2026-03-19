@@ -40,7 +40,7 @@ class WMATAClient:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _get_json(self, path: str, params: dict = None) -> dict:
+    def _get_json(self, path: str, params: dict | None = None) -> dict:
         url = f"{_REST_BASE}{path}"
         logger.info(f"GET (JSON) {url}")
         r = self._session.get(url, params=params or {}, timeout=_TIMEOUT)
@@ -100,14 +100,18 @@ class WMATAClient:
         logger.info(f"Fetched GTFS-RT {source} alerts — {len(feed.entity)} entities")
         return feed
 
-    def get_gtfs_rt_trip_updates(self, source: str = "rail") -> gtfs_realtime_pb2.FeedMessage:
+    def get_gtfs_rt_trip_updates(
+        self, source: str = "rail"
+    ) -> gtfs_realtime_pb2.FeedMessage:
         """
         GTFS-RT trip updates feed (Protobuf).
         source: 'rail' or 'bus'
         """
         path = f"/{source}-gtfsrt-tripupdates.pb"
         feed = self._get_protobuf(path)
-        logger.info(f"Fetched GTFS-RT {source} trip updates — {len(feed.entity)} entities")
+        logger.info(
+            f"Fetched GTFS-RT {source} trip updates — {len(feed.entity)} entities"
+        )
         return feed
 
     def get_all_trip_updates(self) -> list[tuple[gtfs_realtime_pb2.FeedMessage, str]]:

@@ -11,7 +11,7 @@ This module is the only place that touches raw GTFS files.
 All layer extract.py files receive the output of load() as their input.
 """
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 import zipfile
 
 import pandas as pd
@@ -20,6 +20,9 @@ import requests
 from src.common.config import get_config
 from src.common.logger import get_logger
 from src.common.paths import GTFS_DIR, RAW_DIR
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = get_logger(__name__)
 

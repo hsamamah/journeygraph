@@ -32,15 +32,18 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from src.common.cross_layer import check_target_nodes
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
-from src.common.neo4j_tools import Neo4jManager
 from src.common.validators.fare_zones import validate_post_load
-from src.layers.fare.transform import FareTransformResult
+
+if TYPE_CHECKING:
+    from src.common.neo4j_tools import Neo4jManager
+    from src.layers.fare.transform import FareTransformResult
 
 log = get_logger(__name__)
 
