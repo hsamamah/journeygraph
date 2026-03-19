@@ -19,10 +19,10 @@ Adding a new layer:
     3. Register its module path in pipeline.py _LAYER_MODULES
 """
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Layer(str, Enum):
+class Layer(StrEnum):
     PHYSICAL = "physical"
     SERVICE_SCHEDULE = "service_schedule"
     FARE = "fare"

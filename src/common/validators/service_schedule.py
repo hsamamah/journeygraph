@@ -39,9 +39,12 @@ Known data characteristics:
 
 from __future__ import annotations
 
-import pandas as pd
+from typing import TYPE_CHECKING
 
 from src.common.validators.base import ValidationResult
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # ── Pre-load validator ────────────────────────────────────────────────────────
 

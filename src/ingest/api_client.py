@@ -40,7 +40,7 @@ class WMATAClient:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _get_json(self, path: str, params: dict = None) -> dict:
+    def _get_json(self, path: str, params: dict | None = None) -> dict:
         url = f"{_REST_BASE}{path}"
         logger.info(f"GET (JSON) {url}")
         r = self._session.get(url, params=params or {}, timeout=_TIMEOUT)

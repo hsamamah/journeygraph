@@ -16,9 +16,13 @@ Optional (gracefully absent):
   fare_transfer_rules — WMATA may not publish this file in all feed versions
 """
 
-import pandas as pd
+
+from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 log = get_logger(__name__)
 

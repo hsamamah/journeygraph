@@ -16,9 +16,12 @@ Usage:
 
 from __future__ import annotations
 
-import pandas as pd
+from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 log = get_logger(__name__)
 

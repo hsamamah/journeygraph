@@ -46,12 +46,12 @@ class Neo4jManager:
         self.close()
         return False  # don't suppress exceptions
 
-    def query(self, cypher: str, parameters: dict = None):
+    def query(self, cypher: str, parameters: dict | None = None):
         """Run a Cypher query and return results as a list of dicts."""
         with self.driver.session() as session:
             return session.run(cypher, parameters or {}).data()
 
-    def execute_write(self, cypher: str, parameters: dict = None):
+    def execute_write(self, cypher: str, parameters: dict | None = None):
         """Run a write query inside an explicit transaction."""
         with self.driver.session() as session:
             session.execute_write(lambda tx: tx.run(cypher, parameters or {}))

@@ -17,9 +17,13 @@ Optional (gracefully absent):
   calendar_dates  → exceptions applied on top of calendar
 """
 
-import pandas as pd
+
+from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 log = get_logger(__name__)
 

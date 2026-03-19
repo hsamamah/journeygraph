@@ -46,9 +46,12 @@ Known characteristics:
 
 from __future__ import annotations
 
-import pandas as pd
+from typing import TYPE_CHECKING
 
 from src.common.validators.base import ValidationResult
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 # Effect values that Rule 4 maps to an Interruption type.
 # Alerts with effects outside this set are silently dropped.

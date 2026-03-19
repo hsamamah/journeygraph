@@ -28,10 +28,14 @@ Prerequisites:
   Physical layer must run first (Station, Platform, BusStop nodes).
 """
 
-import pandas as pd
+
+from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
 from src.layers.service_schedule import extract, transform
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 log = get_logger(__name__)
 
