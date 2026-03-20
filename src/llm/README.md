@@ -36,7 +36,7 @@ LLM_MAX_TOKENS=512
 
 Install dependencies:
 ```bash
-uv sync
+uv sync --extra llm
 ```
 
 ## CLI
