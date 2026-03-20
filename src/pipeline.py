@@ -30,6 +30,7 @@ not by the order arguments are passed. See src/common/layers.py.
 import argparse
 import sys
 import time
+from typing import Optional, List
 
 from src.common.config import get_config
 from src.common.layers import Layer, resolve_layers, validate_layer_names
@@ -54,7 +55,7 @@ _LAYER_MODULES: dict[Layer, str] = {
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="pipeline",
         description="JourneyGraph ETL pipeline — loads GTFS data into Neo4j",
@@ -246,7 +247,7 @@ def _log_summary(
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Optional[List[str]] = None) -> None:
     args = _parse_args(argv)
 
     # Validate and resolve layer names from CLI strings
