@@ -23,13 +23,16 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
-from src.common.neo4j_tools import Neo4jManager
-from src.layers.interruption.transform import InterruptionTransformResult
+
+if TYPE_CHECKING:
+    from src.common.neo4j_tools import Neo4jManager
+    from src.layers.interruption.transform import InterruptionTransformResult
 
 log = get_logger(__name__)
 
@@ -299,7 +302,7 @@ def _load_tier1_rels(
         ][["date"]].dropna()
         if not sa_dates.empty:
             # Map back to feed_entity_id
-            sa_with_dates = result.service_alerts[["feed_entity_id"]].copy()
+            result.service_alerts[["feed_entity_id"]].copy()
             # Use the date from the interruption that was derived from this alert
             int_sa = result.interruptions[
                 result.interruptions["interruption_id"].str.startswith("int_sa_")

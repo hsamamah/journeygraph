@@ -22,7 +22,7 @@ these prefixes for node type identification and cross-layer routing:
 | `ENT_`   | `:StationEntrance`| 2 (entrance)      | `ENT_A01_N`        |
 | `PF_`    | `:Platform`      | 0 (stop/platform)  | `PF_A01_1`         |
 | `PLF_`   | `:BoardingArea`  | 4 (boarding area)  | `PLF_A01_RED_GL`   |
-| `NODE_`  | `:PathwayNode`   | 3 (generic node)   | `NODE_A01_ELE_01`  |
+| `NODE_`  | `:Pathway`       | 3 (generic node)   | `NODE_A01_ELE_01`  |
 
 **Fare gate detection:** Stop IDs containing `_FG_` are classified as
 fare gates (e.g. `NODE_A01_FG_PAID`). This is a substring match, not a
@@ -39,11 +39,13 @@ Platform nodes.
 
 ---
 
-## PathwayNode Type Derivation
+## Pathway Node Type Derivation
 
-**Location:** `src/layers/service_schedule/transform.py` (node_type on PathwayNode)
+**Location:** `src/layers/service_schedule/transform.py` (node_type on Pathway)
 
-PathwayNode types are derived from substrings in the `NODE_` stop_id:
+`:Pathway` node types are derived from substrings in the `NODE_` stop_id.
+The `:PathwayNode` label was renamed to `:Pathway` in schema v3 — do not
+use `:PathwayNode` in Cypher queries or code, it no longer exists.
 
 | Substring      | node_type    | Neo4j Label  |
 |----------------|-------------|--------------|

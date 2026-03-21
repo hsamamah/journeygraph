@@ -28,10 +28,14 @@ Prerequisites:
     python pipeline.py --layers physical fare
 """
 
-import pandas as pd
+
+from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
 from src.layers.fare import extract, transform
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 log = get_logger(__name__)
 

@@ -17,9 +17,13 @@ Optional (gracefully absent):
   calendar_dates  → exceptions applied on top of calendar
 """
 
-import pandas as pd
+
+from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 log = get_logger(__name__)
 
@@ -47,7 +51,11 @@ def run(gtfs_data: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     for key in OPTIONAL:
         if key in gtfs_data:
             extracted[key] = gtfs_data[key].copy()
-            log.info("service extract: optional file '%s' found (%d rows)", key, len(gtfs_data[key]))
+            log.info(
+                "service extract: optional file '%s' found (%d rows)",
+                key,
+                len(gtfs_data[key]),
+            )
         else:
             log.warning("service extract: optional file '%s' not present in feed", key)
 

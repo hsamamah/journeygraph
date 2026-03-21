@@ -17,8 +17,6 @@ v3 schema (e.g. CANCELED, SIGNIFICANT_DELAYS, CONSTRUCTION).
 
 from __future__ import annotations
 
-from datetime import date
-
 import pandas as pd
 
 from src.common.logger import get_logger
@@ -127,42 +125,79 @@ def _flatten_trip_updates(
                 if delays:
                     delay = max(delays)
 
-            tu_rows.append({
-                "feed_entity_id": entity.id,
-                "trip_id": trip.trip_id or None,
-                "route_id": trip.route_id or None,
-                "start_date": trip.start_date or None,
-                "start_time": trip.start_time or None,
-                "schedule_relationship": SCHEDULE_RELATIONSHIP_TRIP.get(
-                    trip.schedule_relationship, "SCHEDULED"
-                ),
-                "delay": delay,
-                "timestamp": tu.timestamp or None,
-                "source": source,
-            })
+            tu_rows.append(
+                {
+                    "feed_entity_id": entity.id,
+                    "trip_id": trip.trip_id or None,
+                    "route_id": trip.route_id or None,
+                    "start_date": trip.start_date or None,
+                    "start_time": trip.start_time or None,
+                    "schedule_relationship": SCHEDULE_RELATIONSHIP_TRIP.get(
+                        trip.schedule_relationship, "SCHEDULED"
+                    ),
+                    "delay": delay,
+                    "timestamp": tu.timestamp or None,
+                    "source": source,
+                }
+            )
 
             # StopTimeUpdates within this TripUpdate
             for stu in tu.stop_time_update:
-                stu_rows.append({
-                    "parent_entity_id": entity.id,
-                    "stop_sequence": stu.stop_sequence or None,
-                    "stop_id": stu.stop_id or None,
-                    "arrival_delay": stu.arrival.delay if stu.HasField("arrival") else None,
-                    "arrival_time": stu.arrival.time if stu.HasField("arrival") else None,
-                    "departure_delay": stu.departure.delay if stu.HasField("departure") else None,
-                    "departure_time": stu.departure.time if stu.HasField("departure") else None,
-                    "schedule_relationship": SCHEDULE_RELATIONSHIP_STOP.get(
-                        stu.schedule_relationship, "SCHEDULED"
-                    ),
-                })
+                stu_rows.append(
+                    {
+                        "parent_entity_id": entity.id,
+                        "stop_sequence": stu.stop_sequence or None,
+                        "stop_id": stu.stop_id or None,
+                        "arrival_delay": stu.arrival.delay
+                        if stu.HasField("arrival")
+                        else None,
+                        "arrival_time": stu.arrival.time
+                        if stu.HasField("arrival")
+                        else None,
+                        "departure_delay": stu.departure.delay
+                        if stu.HasField("departure")
+                        else None,
+                        "departure_time": stu.departure.time
+                        if stu.HasField("departure")
+                        else None,
+                        "schedule_relationship": SCHEDULE_RELATIONSHIP_STOP.get(
+                            stu.schedule_relationship, "SCHEDULED"
+                        ),
+                    }
+                )
 
-    trip_updates = pd.DataFrame(tu_rows) if tu_rows else pd.DataFrame(
-        columns=["feed_entity_id", "trip_id", "route_id", "start_date",
-                 "start_time", "schedule_relationship", "delay", "timestamp", "source"]
+    trip_updates = (
+        pd.DataFrame(tu_rows)
+        if tu_rows
+        else pd.DataFrame(
+            columns=[
+                "feed_entity_id",
+                "trip_id",
+                "route_id",
+                "start_date",
+                "start_time",
+                "schedule_relationship",
+                "delay",
+                "timestamp",
+                "source",
+            ]
+        )
     )
-    stop_time_updates = pd.DataFrame(stu_rows) if stu_rows else pd.DataFrame(
-        columns=["parent_entity_id", "stop_sequence", "stop_id", "arrival_delay",
-                 "arrival_time", "departure_delay", "departure_time", "schedule_relationship"]
+    stop_time_updates = (
+        pd.DataFrame(stu_rows)
+        if stu_rows
+        else pd.DataFrame(
+            columns=[
+                "parent_entity_id",
+                "stop_sequence",
+                "stop_id",
+                "arrival_delay",
+                "arrival_time",
+                "departure_delay",
+                "departure_time",
+                "schedule_relationship",
+            ]
+        )
     )
 
     return trip_updates, stop_time_updates
@@ -196,38 +231,67 @@ def _flatten_alerts(
                 active_start = alert.active_period[0].start or None
                 active_end = alert.active_period[0].end or None
 
-            alert_rows.append({
-                "feed_entity_id": entity.id,
-                "cause": ALERT_CAUSE.get(alert.cause, "UNKNOWN_CAUSE"),
-                "effect": ALERT_EFFECT.get(alert.effect, "UNKNOWN_EFFECT"),
-                "severity_level": SEVERITY_LEVEL.get(alert.severity_level, "UNKNOWN_SEVERITY"),
-                "header_text": _translated_text(alert.header_text),
-                "description_text": _translated_text(alert.description_text),
-                "url": _translated_text(alert.url),
-                "active_period_start": active_start,
-                "active_period_end": active_end,
-                "source": source,
-            })
+            alert_rows.append(
+                {
+                    "feed_entity_id": entity.id,
+                    "cause": ALERT_CAUSE.get(alert.cause, "UNKNOWN_CAUSE"),
+                    "effect": ALERT_EFFECT.get(alert.effect, "UNKNOWN_EFFECT"),
+                    "severity_level": SEVERITY_LEVEL.get(
+                        alert.severity_level, "UNKNOWN_SEVERITY"
+                    ),
+                    "header_text": _translated_text(alert.header_text),
+                    "description_text": _translated_text(alert.description_text),
+                    "url": _translated_text(alert.url),
+                    "active_period_start": active_start,
+                    "active_period_end": active_end,
+                    "source": source,
+                }
+            )
 
             # EntitySelectors (informed_entity)
             for i, ie in enumerate(alert.informed_entity):
-                selector_rows.append({
-                    "parent_entity_id": entity.id,
-                    "selector_group_id": f"{entity.id}_sel_{i}",
-                    "agency_id": ie.agency_id or None,
-                    "route_id": ie.route_id or None,
-                    "stop_id": ie.stop_id or None,
-                    "trip_id": ie.trip.trip_id if ie.HasField("trip") else None,
-                })
+                selector_rows.append(
+                    {
+                        "parent_entity_id": entity.id,
+                        "selector_group_id": f"{entity.id}_sel_{i}",
+                        "agency_id": ie.agency_id or None,
+                        "route_id": ie.route_id or None,
+                        "stop_id": ie.stop_id or None,
+                        "trip_id": ie.trip.trip_id if ie.HasField("trip") else None,
+                    }
+                )
 
-    service_alerts = pd.DataFrame(alert_rows) if alert_rows else pd.DataFrame(
-        columns=["feed_entity_id", "cause", "effect", "severity_level",
-                 "header_text", "description_text", "url",
-                 "active_period_start", "active_period_end", "source"]
+    service_alerts = (
+        pd.DataFrame(alert_rows)
+        if alert_rows
+        else pd.DataFrame(
+            columns=[
+                "feed_entity_id",
+                "cause",
+                "effect",
+                "severity_level",
+                "header_text",
+                "description_text",
+                "url",
+                "active_period_start",
+                "active_period_end",
+                "source",
+            ]
+        )
     )
-    entity_selectors = pd.DataFrame(selector_rows) if selector_rows else pd.DataFrame(
-        columns=["parent_entity_id", "selector_group_id", "agency_id",
-                 "route_id", "stop_id", "trip_id"]
+    entity_selectors = (
+        pd.DataFrame(selector_rows)
+        if selector_rows
+        else pd.DataFrame(
+            columns=[
+                "parent_entity_id",
+                "selector_group_id",
+                "agency_id",
+                "route_id",
+                "stop_id",
+                "trip_id",
+            ]
+        )
     )
 
     return service_alerts, entity_selectors
@@ -255,7 +319,8 @@ def run(
 
     log.info(
         "interruption extract: fetched %d trip update feed(s), %d alert feed(s)",
-        len(tu_feeds), len(alert_feeds),
+        len(tu_feeds),
+        len(alert_feeds),
     )
 
     # Flatten protobuf → DataFrames
@@ -263,9 +328,15 @@ def run(
     service_alerts, entity_selectors = _flatten_alerts(alert_feeds)
 
     log.info("interruption extract: trip_updates          %6d rows", len(trip_updates))
-    log.info("interruption extract: stop_time_updates     %6d rows", len(stop_time_updates))
-    log.info("interruption extract: service_alerts        %6d rows", len(service_alerts))
-    log.info("interruption extract: entity_selectors      %6d rows", len(entity_selectors))
+    log.info(
+        "interruption extract: stop_time_updates     %6d rows", len(stop_time_updates)
+    )
+    log.info(
+        "interruption extract: service_alerts        %6d rows", len(service_alerts)
+    )
+    log.info(
+        "interruption extract: entity_selectors      %6d rows", len(entity_selectors)
+    )
 
     result = {
         "trip_updates": trip_updates,

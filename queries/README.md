@@ -20,7 +20,7 @@ queries/
 │   └── analytical.cypher        ← service-only queries (runnable now)
 ├── cross_layer/
 │   └── analytical.cypher        ← queries spanning service+physical+fare
-├── physical/                    ← Lauren's layer
+├── physical/
 ├── accessibility/               ← OutageEvent queries (future)
 └── interruption/                ← GTFS-RT deviation queries (future)
 ```

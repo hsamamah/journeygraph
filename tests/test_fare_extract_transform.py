@@ -77,10 +77,13 @@ class TestParseAmount:
         assert _parse_amount("metrorail_one_way_full_fare_675") == pytest.approx(6.75)
 
     def test_bus_regular_fixed(self):
-        assert _parse_amount("metrobus_one_way_regular_fare") == pytest.approx(2.25)
+        # Bus fares have no numeric suffix — requires product_amount_map lookup
+        amount_map = {"metrobus_one_way_regular_fare": 2.25}
+        assert _parse_amount("metrobus_one_way_regular_fare", amount_map) == pytest.approx(2.25)
 
     def test_bus_express_fixed(self):
-        assert _parse_amount("metrobus_one_way_express_fare") == pytest.approx(4.25)
+        amount_map = {"metrobus_one_way_express_fare": 4.25}
+        assert _parse_amount("metrobus_one_way_express_fare", amount_map) == pytest.approx(4.25)
 
 
 class TestLogicalProduct:
@@ -177,9 +180,13 @@ class TestTransformFareLegRules:
 
     def test_bus_rules_not_in_from_area(self, gtfs_data):
         result = transform_run(gtfs_data)
-        bus_leg_groups = {"leg_metrobus_regular", "leg_metrobus_express"}
-        from_area_groups = set(result.leg_rule_from_area["leg_group_id"].tolist())
-        assert bus_leg_groups.isdisjoint(from_area_groups)
+        bus_prefixes = ("leg_metrobus_regular__", "leg_metrobus_express__")
+        # rule_id encodes leg_group_id as prefix — bus rules have no from/to area
+        # so they should not appear in leg_rule_from_area at all
+        from_area_rule_ids = set(result.leg_rule_from_area["rule_id"].tolist())
+        assert not any(
+            rid.startswith(bus_prefixes) for rid in from_area_rule_ids
+        )
 
     def test_applies_product_has_amount(self, gtfs_data):
         result = transform_run(gtfs_data)
@@ -225,6 +232,7 @@ class TestTransformValidationGate:
 # ═══════════════════════════════════════════════════════════════
 
 
+@pytest.mark.slow
 def test_transform_on_real_gtfs(real_stops_df, real_fare_leg_df):
     """Full transform run against actual WMATA GTFS files."""
     # Use a complete fare_products fixture that includes all 5 logical products
@@ -271,6 +279,11 @@ def test_transform_on_real_gtfs(real_stops_df, real_fare_leg_df):
         "fare_leg_rules": real_fare_leg_df,
         "fare_media": full_fare_media,
         "fare_products": full_fare_products,
+        "feed_info": pd.DataFrame([dict(
+            feed_publisher_name="WMATA", feed_publisher_url="https://wmata.com",
+            feed_lang="en", feed_start_date="20251214", feed_end_date="20260613",
+            feed_version="S1000246", feed_contact_email="", feed_contact_url="",
+        )]),
     }
     result = transform_run(raw)
 
@@ -278,4 +291,11 @@ def test_transform_on_real_gtfs(real_stops_df, real_fare_leg_df):
     assert len(result.station_zones) == 98
     assert len(result.gate_zones) == 240
     assert len(result.fare_products) == 5  # 5 logical nodes
-    assert len(result.fare_leg_rules) == 4  # 4 unique leg_group_ids
+    # fare_leg_rules has one row per unique OD pair rule_id (not per leg_group_id).
+    # Real WMATA feed: ~9,506 rail OD pairs + 3 bus rules = 9,509 total.
+    assert len(result.fare_leg_rules) == 9509
+    # Verify all four expected network types are present
+    networks = set(result.fare_leg_rules["network_id"].tolist())
+    assert "metrorail" in networks
+    assert "metrobus_regular" in networks
+    assert "metrobus_express" in networks

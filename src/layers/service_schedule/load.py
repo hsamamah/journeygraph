@@ -22,14 +22,17 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
 from src.common.cross_layer import check_target_nodes
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
-from src.common.neo4j_tools import Neo4jManager
-from src.layers.service_schedule.transform import ServiceTransformResult
+
+if TYPE_CHECKING:
+    from src.common.neo4j_tools import Neo4jManager
+    from src.layers.service_schedule.transform import ServiceTransformResult
 
 log = get_logger(__name__)
 
@@ -415,7 +418,7 @@ def run(result: ServiceTransformResult, neo4j: Neo4jManager) -> None:
     _load_constraints(neo4j)
 
     # Phase 2 — Nodes (FeedInfo via shared utility)
-    feed_version = ensure_feed_info(neo4j, result.feed_info)
+    ensure_feed_info(neo4j, result.feed_info)
     _load_agency(neo4j, result)
     _load_routes(neo4j, result)
     _load_route_patterns(neo4j, result)

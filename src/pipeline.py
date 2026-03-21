@@ -266,12 +266,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         log.info("--download-only complete — %d files available", len(data))
         return
 
-    plan = _execution_plan(
-        requested, with_deps=args.with_deps, cascade=args.cascade
-    )
-    _print_plan(
-        plan, requested, with_deps=args.with_deps, cascade=args.cascade
-    )
+    plan = _execution_plan(requested, with_deps=args.with_deps, cascade=args.cascade)
+    _print_plan(plan, requested, with_deps=args.with_deps, cascade=args.cascade)
 
     if args.dry_run:
         log.info("Dry run — exiting without executing")
