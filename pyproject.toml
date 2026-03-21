@@ -1,20 +1,31 @@
 [project]
 name = "journeygraph"
-version = "0.1.0"
+version = "0.1.5"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    # ETL pipeline — always installed
     "gtfs-realtime-bindings>=2.0.0",
-    "ipykernel>=7.2.0",
     "neo4j>=6.1.0",
-    "neo4j-viz>=1.2.0",
-    "networkx>=3.6.1",
     "pandas>=3.0.1",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.2.2",
     "requests>=2.32.5",
+    "networkx>=3.6.1",
+]
+
+[project.optional-dependencies]
+llm = [
+    # LLM query pipeline — install with: uv sync --extra llm
+    "neo4j-graphrag[anthropic]>=1.14.0",
+    "pyyaml>=6.0",
+]
+demo = [
+    # Jupyter demo notebooks — install with: uv sync --extra demo
+    "neo4j-viz>=1.2.0",
+    "ipykernel>=6.0",
 ]
 
 
@@ -74,4 +85,8 @@ line-ending              = "auto"
 [tool.pytest.ini_options]
 testpaths     = ["tests"]
 pythonpath    = ["."]          # makes src.* importable without installing the package
-addopts       = "-ra -q --cov=src --cov-report=term-missing"
+addopts       = "-ra -q --cov=src --cov-report=term-missing -m 'not slow'"
+
+markers = [
+    "slow: marks tests that run against real GTFS data or require significant I/O (run with -m slow)",
+]
