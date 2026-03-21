@@ -12,7 +12,7 @@ Usage:
 """
 
 import logging
-
+from typing import Optional
 from neo4j import GraphDatabase
 
 log = logging.getLogger(__name__)
@@ -21,9 +21,9 @@ log = logging.getLogger(__name__)
 class Neo4jManager:
     def __init__(
         self,
-        uri: str | None = None,
-        user: str | None = None,
-        password: str | None = None,
+        uri: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         if uri and user and password:
             self.driver = GraphDatabase.driver(uri, auth=(user, password))

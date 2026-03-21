@@ -16,6 +16,7 @@ import zipfile
 
 import pandas as pd
 import requests
+from typing import Optional
 
 from src.common.config import get_config
 from src.common.logger import get_logger
@@ -113,7 +114,7 @@ def extract_zip(zip_path: Path, force: bool = False) -> None:
     logger.info("Extraction complete.")
 
 
-def _parse_file(name: str) -> pd.DataFrame | None:
+def _parse_file(name: str) -> Optional[pd.DataFrame]:
     """Parse a single GTFS CSV file into a DataFrame. Returns None if file absent."""
     path = GTFS_DIR / f"{name}.txt"
     if not path.exists():

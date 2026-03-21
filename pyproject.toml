@@ -1,6 +1,6 @@
 [project]
 name = "journeygraph"
-version = "0.1.0"
+version = "0.1.5"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
@@ -13,6 +13,19 @@ dependencies = [
     "pydantic-settings>=2.13.1",
     "python-dotenv>=1.2.2",
     "requests>=2.32.5",
+    "networkx>=3.6.1",
+]
+
+[project.optional-dependencies]
+llm = [
+    # LLM query pipeline — install with: uv sync --extra llm
+    "neo4j-graphrag[anthropic]>=1.14.0",
+    "pyyaml>=6.0",
+]
+demo = [
+    # Jupyter demo notebooks — install with: uv sync --extra demo
+    "neo4j-viz>=1.2.0",
+    "ipykernel>=6.0",
 ]
 
 [project.optional-dependencies]

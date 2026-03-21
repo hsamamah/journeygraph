@@ -5,8 +5,9 @@ Keep this module pure (no imports from src.*) so any layer can use it
 without risking circular imports.
 """
 
+from typing import Optional
 
-def normalize_gtfs_time(time_str) -> int | None:
+def normalize_gtfs_time(time_str) -> Optional[int]:
     """
     Convert a GTFS HH:MM:SS time string to total seconds from start of service day.
 
@@ -21,14 +22,14 @@ def normalize_gtfs_time(time_str) -> int | None:
     return (h * 3600) + (m * 60) + s
 
 
-def clean_str(value) -> str | None:
+def clean_str(value) -> Optional[str]:
     """Strip whitespace and return None for empty/null strings."""
     if value is None or str(value).strip() in ("", "nan"):
         return None
     return str(value).strip()
 
 
-def safe_int(value) -> int | None:
+def safe_int(value) -> Optional[int]:
     """Convert to int, returning None on failure."""
     try:
         return int(value)
@@ -36,7 +37,7 @@ def safe_int(value) -> int | None:
         return None
 
 
-def safe_float(value) -> float | None:
+def safe_float(value) -> Optional[float]:
     """Convert to float, returning None on failure."""
     try:
         return float(value)
