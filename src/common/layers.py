@@ -36,8 +36,8 @@ DEPENDENCIES: dict[Layer, list[Layer]] = {
     Layer.PHYSICAL: [],
     Layer.SERVICE_SCHEDULE: [Layer.PHYSICAL],
     Layer.FARE: [Layer.PHYSICAL],
-    Layer.ACCESSIBILITY: [Layer.PHYSICAL],
-    Layer.INTERRUPTION: [Layer.SERVICE_SCHEDULE],
+    Layer.INTERRUPTION: [Layer.PHYSICAL, Layer.SERVICE_SCHEDULE, Layer.FARE],
+    Layer.ACCESSIBILITY: [Layer.PHYSICAL, Layer.SERVICE_SCHEDULE, Layer.FARE],
 }
 
 
