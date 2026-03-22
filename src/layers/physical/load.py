@@ -27,8 +27,8 @@ inline Cypher strings in this module.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
+import re
 
 import pandas as pd
 
@@ -40,13 +40,6 @@ log = get_logger(__name__)
 
 # Resolve Cypher query files relative to repo root
 _QUERY_DIR = Path(__file__).parents[3] / "queries" / "physical"
-
-# GTFS location_type values
-_LOC_PLATFORM  = {0, 4}
-_LOC_STATION   = 1
-_LOC_ENTRANCE  = 2
-_LOC_FAREGATE  = 3
-
 
 # ── Cypher file helpers ────────────────────────────────────────────────────────
 
@@ -102,31 +95,33 @@ def _load_constraints(neo4j: Neo4jManager) -> None:
 
 
 def _load_stations(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
-    stations = stops[stops["location_type"] == _LOC_STATION].copy()
-    log.info("physical load: Station (%d nodes)", len(stations))
+    log.info("physical load: Station (%d nodes)", len(stops))
     cypher = _extract_statement(_load_query("nodes.cypher"), ":Station")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stations)})
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
 def _load_entrances(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
-    entrances = stops[stops["location_type"] == _LOC_ENTRANCE].copy()
-    log.info("physical load: StationEntrance (%d nodes)", len(entrances))
+    log.info("physical load: StationEntrance (%d nodes)", len(stops))
     cypher = _extract_statement(_load_query("nodes.cypher"), ":StationEntrance")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(entrances)})
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
 def _load_platforms(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
-    platforms = stops[stops["location_type"].isin(_LOC_PLATFORM)].copy()
-    log.info("physical load: Platform (%d nodes)", len(platforms))
+    log.info("physical load: Platform (%d nodes)", len(stops))
     cypher = _extract_statement(_load_query("nodes.cypher"), ":Platform")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(platforms)})
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
+
+
+def _load_bus_stops(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
+    log.info("physical load: BusStop (%d nodes)", len(stops))
+    cypher = _extract_statement(_load_query("nodes.cypher"), ":BusStop")
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
 def _load_faregates(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
-    faregates = stops[stops["id"].str.contains("_FG_", na=False)].copy()
-    log.info("physical load: FareGate (%d nodes)", len(faregates))
+    log.info("physical load: FareGate (%d nodes)", len(stops))
     cypher = _extract_statement(_load_query("nodes.cypher"), ":FareGate")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(faregates)})
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
 def _load_pathways(neo4j: Neo4jManager, pathways: pd.DataFrame) -> None:
@@ -168,39 +163,26 @@ def _load_levels(neo4j: Neo4jManager, levels: pd.DataFrame) -> None:
 # ── Relationship loaders ───────────────────────────────────────────────────────
 
 
-def _load_station_contains_entrance(
-    neo4j: Neo4jManager, stops: pd.DataFrame
-) -> None:
-    entrances = stops[stops["location_type"] == _LOC_ENTRANCE][
-        ["parent_station", "id"]
-    ].rename(columns={"parent_station": "station_id", "id": "entrance_id"})
+def _load_station_contains_entrance(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
     log.info(
-        "physical load: Station -[:CONTAINS]-> StationEntrance (%d rels)", len(entrances)
+        "physical load: Station -[:CONTAINS]-> StationEntrance (%d rels)",
+        len(stops),
     )
     cypher = _extract_statement(
         _load_query("relationships.cypher"), "Station -[:CONTAINS]-> StationEntrance"
     )
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(entrances)})
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
-def _load_station_contains_platform(
-    neo4j: Neo4jManager, stops: pd.DataFrame
-) -> None:
-    platforms = stops[stops["location_type"].isin(_LOC_PLATFORM)][
-        ["parent_station", "id"]
-    ].rename(columns={"parent_station": "station_id", "id": "platform_id"})
-    log.info(
-        "physical load: Station -[:CONTAINS]-> Platform (%d rels)", len(platforms)
-    )
+def _load_station_contains_platform(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
+    log.info("physical load: Station -[:CONTAINS]-> Platform (%d rels)", len(stops))
     cypher = _extract_statement(
         _load_query("relationships.cypher"), "Station -[:CONTAINS]-> Platform"
     )
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(platforms)})
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
-def _load_pathway_links(
-    neo4j: Neo4jManager, pathways: pd.DataFrame, stops: pd.DataFrame
-) -> None:
+def _load_pathway_links(neo4j: Neo4jManager, links: dict[pd.DataFrame]) -> None:
     """
     Wire Pathway -[:LINKS]-> (StationEntrance | Platform | Station | FareGate).
 
@@ -212,27 +194,24 @@ def _load_pathway_links(
     Complexity: O(n) pandas ops instead of O(n) × individual Neo4j writes.
     """
     rel_cypher = _load_query("relationships.cypher")
-    stop_types = stops[["id", "location_type"]].copy()
-
-    # Build a single (pathway_id, stop_id) frame covering both endpoints
-    from_side = pathways[["id", "from_stop_id"]].rename(
-        columns={"id": "pathway_id", "from_stop_id": "stop_id"}
-    )
-    to_side = pathways[["id", "to_stop_id"]].rename(
-        columns={"id": "pathway_id", "to_stop_id": "stop_id"}
-    )
-    all_links = (
-        pd.concat([from_side, to_side], ignore_index=True)
-        .dropna(subset=["stop_id"])
-        .drop_duplicates()
-        .merge(stop_types.rename(columns={"id": "stop_id"}), on="stop_id", how="inner")
-    )
 
     dispatch = [
-        ("Pathway -[:LINKS]-> StationEntrance", all_links[all_links["location_type"] == _LOC_ENTRANCE]),
-        ("Pathway -[:LINKS]-> Platform",        all_links[all_links["location_type"].isin(_LOC_PLATFORM)]),
-        ("Pathway -[:LINKS]-> Station",         all_links[all_links["location_type"] == _LOC_STATION]),
-        ("Pathway -[:LINKS]-> FareGate",        all_links[all_links["location_type"] == _LOC_FAREGATE]),
+        (
+            "Pathway -[:LINKS]-> StationEntrance",
+            links["ENTRANCE"],
+        ),
+        (
+            "Pathway -[:LINKS]-> Platform",
+            links["PLATFORM"],
+        ),
+        (
+            "Pathway -[:LINKS]-> Station",
+            links["STATION"],
+        ),
+        (
+            "Pathway -[:LINKS]-> FareGate",
+            links["FAREGATE"],
+        ),
     ]
 
     for hint, partition in dispatch:
@@ -259,9 +238,16 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     """
     log.info("physical load: starting")
 
-    stops    = result["stops"]
+    stations = result["stations"]
+    entrances = result["entrances"]
+    platforms = result["platforms"]
+    bus_stops = result["bus_stops"]
     pathways = result["pathways"]
-    levels   = result["levels"]
+    levels = result["levels"]
+    faregates = result["faregates"]
+    station_contains_platform = result["station_contains_platform"]
+    station_contains_entrance = result["station_contains_entrance"]
+    links = result["links"]
 
     # Shared FeedInfo node (idempotent — safe if already created by another layer)
     ensure_feed_info(neo4j, result["feed_info"])
@@ -270,10 +256,11 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     _load_constraints(neo4j)
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
-    _load_stations(neo4j, stops)
-    _load_entrances(neo4j, stops)
-    _load_platforms(neo4j, stops)
-    _load_faregates(neo4j, stops)
+    _load_stations(neo4j, stations)
+    _load_entrances(neo4j, entrances)
+    _load_platforms(neo4j, platforms)
+    _load_bus_stops(neo4j, bus_stops)
+    _load_faregates(neo4j, faregates)
     _load_pathways(neo4j, pathways)
     _load_levels(neo4j, levels)
 
@@ -281,8 +268,8 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     _load_pathway_labels(neo4j)
 
     # ── Relationships ─────────────────────────────────────────────────────────
-    _load_station_contains_entrance(neo4j, stops)
-    _load_station_contains_platform(neo4j, stops)
-    _load_pathway_links(neo4j, pathways, stops)
+    _load_station_contains_entrance(neo4j, station_contains_entrance)
+    _load_station_contains_platform(neo4j, station_contains_platform)
+    _load_pathway_links(neo4j, links)
 
     log.info("physical load: complete")
