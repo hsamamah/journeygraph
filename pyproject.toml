@@ -28,19 +28,6 @@ demo = [
     "ipykernel>=6.0",
 ]
 
-[project.optional-dependencies]
-llm = [
-    # LLM query pipeline — install with: uv sync --extra llm
-    "neo4j-graphrag[anthropic]>=1.14.0",
-    "pyyaml>=6.0",
-]
-demo = [
-    # Jupyter demo notebooks — install with: uv sync --extra demo
-    "neo4j-viz>=1.2.0",
-    "ipykernel>=6.0",
-]
-
-
 [dependency-groups]
 dev = [
     "ruff>=0.9.0",
