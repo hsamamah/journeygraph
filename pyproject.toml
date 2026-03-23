@@ -50,6 +50,7 @@ select = [
     "UP",  # pyupgrade                — use modern Python syntax (e.g. X | Y over Union[X, Y])
     "B",   # flake8-bugbear           — likely bugs and design problems
     "C4",  # flake8-comprehensions    — simplify list/dict/set comprehensions
+    "ANN", # flake8-annotations       — missing type hints
     "SIM", # flake8-simplify          — simplifiable code patterns
     "TCH", # flake8-type-checking     — move type-only imports into TYPE_CHECKING blocks
     "RUF", # ruff-specific rules      — misc quality rules
