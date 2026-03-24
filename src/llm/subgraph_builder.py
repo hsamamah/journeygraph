@@ -20,13 +20,16 @@ Failure handling:
 
 from datetime import UTC, datetime
 import logging
+from typing import TYPE_CHECKING
 
-from src.common.neo4j_tools import Neo4jManager
 from src.llm.anchor_resolver import AnchorResolver
 from src.llm.context_serializer import ContextSerializer
 from src.llm.hop_expander import HopExpander
-from src.llm.planner_output import PlannerOutput
 from src.llm.subgraph_output import SubgraphOutput, make_zero_anchor_fallback
+
+if TYPE_CHECKING:
+    from src.common.neo4j_tools import Neo4jManager
+    from src.llm.planner_output import PlannerOutput
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +52,7 @@ class SubgraphBuilder:
         self,
         db: Neo4jManager,
         invocation_time: datetime | None = None,
-    ):
+    ) -> None:
         self._resolver = AnchorResolver(
             db=db, invocation_time=invocation_time or datetime.now(UTC)
         )
@@ -96,7 +99,7 @@ class SubgraphBuilder:
             log.warning("subgraph_builder | zero anchors resolved | domain=%s", domain)
             return make_zero_anchor_fallback(domain)
 
-        log.debug(
+        log.info(
             "subgraph_builder | anchors resolved | stations=%d routes=%d "
             "dates=%d pathway_nodes=%d | domain=%s",
             len(resolutions.resolved_stations),
@@ -127,7 +130,7 @@ class SubgraphBuilder:
                 ),
             )
 
-        log.debug(
+        log.info(
             "subgraph_builder | expansion complete | nodes=%d rels=%d "
             "provenance=%d | domain=%s",
             raw.node_count,

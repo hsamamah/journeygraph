@@ -74,7 +74,7 @@ class HopExpander:
             the connection lifecycle.
     """
 
-    def __init__(self, db: Neo4jManager):
+    def __init__(self, db: Neo4jManager) -> None:
         self.db = db
 
     # ── Public ────────────────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ class HopExpander:
                 node_count=0,
             )
 
-        log.debug(
+        log.info(
             "hop_expander | seeded %d anchor nodes | domain=%s",
             len(nodes),
             domain,
@@ -172,7 +172,7 @@ class HopExpander:
                         props=row["rel_props"],
                     )
 
-            log.debug(
+            log.info(
                 "hop_expander | hop %d complete | new_nodes=%d total_nodes=%d | domain=%s",
                 hop,
                 len(new_frontier),
@@ -182,7 +182,7 @@ class HopExpander:
 
             # Stop early if frontier is exhausted before max_hops
             if not new_frontier:
-                log.debug(
+                log.info(
                     "hop_expander | frontier exhausted at hop %d | domain=%s",
                     hop,
                     domain,
@@ -201,7 +201,7 @@ class HopExpander:
         node_list = list(nodes.values())
         node_count = len(node_list)
 
-        log.debug(
+        log.info(
             "hop_expander | expansion complete | nodes=%d rels=%d provenance=%d | domain=%s",
             node_count,
             len(rels),
@@ -320,7 +320,7 @@ class HopExpander:
                 }
             )
 
-        log.debug(
+        log.info(
             "hop_expander | provenance pass | found=%d | domain=%s",
             len(provenance),
             domain,

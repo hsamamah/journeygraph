@@ -13,14 +13,14 @@ Usage:
     python -m src.llm.run "how many trips were cancelled on the red line yesterday"
 
     # Single query with full decision trace
-    python -m src.llm.run "how many trips were cancelled" --verbose
+    python -m src.llm.run "how many trips were cancelled"
 
     # Smoke test — four hardcoded queries, always runs in strict mode
     python -m src.llm.run --demo
 
     # Interactive REPL
     python -m src.llm.run --repl
-    python -m src.llm.run --repl --verbose
+    python -m src.llm.run --repl
 
     # Hard-fail on any schema validation warning
     python -m src.llm.run "..." --strict
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import UTC, datetime
+import logging
 import sys
 from typing import TYPE_CHECKING
 
@@ -112,15 +113,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Start an interactive query loop. Exit with 'quit', 'exit', or Ctrl+C.",
     )
 
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help=(
-            "Print Stage 1 domain scores, raw Stage 2 LLM response, "
-            "each PlannerOutput field individually, and full SubgraphOutput. "
-            "Available in all modes including --repl."
-        ),
-    )
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -238,7 +230,6 @@ def _run_query(
     db: Neo4jManager,
     query: str,
     *,
-    verbose: bool,
     label: str | None = None,
 ) -> tuple[PlannerOutput, SubgraphOutput | None]:
     """
@@ -253,7 +244,6 @@ def _run_query(
         planner: Initialised Planner instance.
         db:      Live Neo4jManager — held open across queries.
         query:   Raw query string.
-        verbose: Print full structured output.
         label:   Optional prefix for --demo mode e.g. '[1/4]'.
 
     Returns:
@@ -264,23 +254,15 @@ def _run_query(
     invocation_time = datetime.now(UTC)
     prefix = f"{label}  " if label else ""
 
-    if verbose:
-        stage1_result = planner.classify_only(query)
-        stage1_scores = stage1_result.scores
-    else:
-        stage1_scores = None
+    stage1_result = planner.classify_only(query)
+    stage1_scores = stage1_result.scores
 
     planner_output = planner.run(query)
 
     # ── Planner output ────────────────────────────────────────────────────────
-    if verbose:
-        header = f"\n{'═' * 56}\n{prefix}Query: {query!r}\n{'═' * 56}"
-        print(header)
-        print(_fmt_planner_verbose(planner_output, stage1_scores=stage1_scores))
-    else:
-        if label:
-            print(f"\n{prefix}{query!r}")
-        print(_fmt_planner_compact(planner_output))
+    header = f"\n{'═' * 56}\n{prefix}Query: {query!r}\n{'═' * 56}"
+    print(header)
+    print(_fmt_planner_verbose(planner_output, stage1_scores=stage1_scores))
 
     # ── Subgraph path ─────────────────────────────────────────────────────────
     sub_output: SubgraphOutput | None = None
@@ -288,11 +270,7 @@ def _run_query(
     if not planner_output.rejected and planner_output.path in {"subgraph", "both"}:
         builder = SubgraphBuilder(db=db, invocation_time=invocation_time)
         sub_output = builder.run(planner_output)
-
-        if verbose:
-            print(_fmt_subgraph_verbose(sub_output))
-        else:
-            print(_fmt_subgraph_compact(sub_output))
+        print(_fmt_subgraph_verbose(sub_output))
 
     return planner_output, sub_output
 
@@ -304,13 +282,11 @@ def _mode_default(
     planner: Planner,
     db: Neo4jManager,
     query: str,
-    *,
-    verbose: bool,
 ) -> None:
-    _run_query(planner, db, query, verbose=verbose)
+    _run_query(planner, db, query)
 
 
-def _mode_demo(planner: Planner, db: Neo4jManager, *, verbose: bool) -> None:
+def _mode_demo(planner: Planner, db: Neo4jManager) -> None:
     """
     Four hardcoded smoke test queries.
     Always runs in strict mode (enforced at registry construction by caller).
@@ -320,7 +296,7 @@ def _mode_demo(planner: Planner, db: Neo4jManager, *, verbose: bool) -> None:
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, _ = _run_query(planner, db, query, verbose=verbose, label=label)
+        planner_output, _ = _run_query(planner, db, query, label=label)
         results.append((expected_domain, planner_output))
 
     print(f"\n{'═' * 56}")
@@ -339,7 +315,10 @@ def _mode_demo(planner: Planner, db: Neo4jManager, *, verbose: bool) -> None:
     print(f"\n{'All passed' if all_passed else 'Some checks failed'}")
 
 
-def _mode_repl(planner: Planner, db: Neo4jManager, *, verbose: bool) -> None:
+def _mode_repl(
+    planner: Planner,
+    db: Neo4jManager,
+) -> None:
     """
     Interactive query loop.
     Exits cleanly on 'quit', 'exit', or Ctrl+C / Ctrl+D.
@@ -403,6 +382,12 @@ def _startup(*, strict: bool) -> tuple[Planner, Neo4jManager]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Set up global logging configuration to show all internal module logs
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+    )
+
     args = _parse_args(argv)
     strict = args.strict or args.demo
 
@@ -414,11 +399,11 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         if args.demo:
-            _mode_demo(planner, db, verbose=args.verbose)
+            _mode_demo(planner, db)
         elif args.repl:
-            _mode_repl(planner, db, verbose=args.verbose)
+            _mode_repl(planner, db)
         elif args.query:
-            _mode_default(planner, db, args.query, verbose=args.verbose)
+            _mode_default(planner, db, args.query)
         else:
             _parse_args(["--help"])
     finally:

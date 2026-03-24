@@ -126,7 +126,7 @@ class ContextSerializer:
         context = self._serialize(raw, nodes_by_eid, rel_index, resolutions)
         token_count = _count_tokens(context)
 
-        log.debug(
+        log.info(
             "context_serializer | initial serialization | tokens=%d budget=%d | domain=%s",
             token_count,
             TOKEN_BUDGET,
@@ -150,7 +150,7 @@ class ContextSerializer:
             token_count=token_count,
         )
 
-        log.debug(
+        log.info(
             "context_serializer | budget enforced | tokens=%d nodes_removed=%d | domain=%s",
             token_count,
             nodes_removed,
@@ -204,7 +204,7 @@ class ContextSerializer:
             context = self._serialize(raw, nodes_by_eid, rel_index, resolutions)
             token_count = _count_tokens(context)
 
-            log.debug(
+            log.info(
                 "context_serializer | trimmed node | labels=%s hop=%d "
                 "tokens=%d nodes_removed=%d | domain=%s",
                 candidate.labels,
