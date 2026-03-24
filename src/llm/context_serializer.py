@@ -28,13 +28,13 @@ Trimming affects the serialized context block only. RawSubgraph.provenance_nodes
 is passed through to SubgraphOutput.provenance_nodes unchanged.
 """
 
-import logging
 from dataclasses import dataclass
+import logging
 
 import tiktoken
 
-from src.llm.subgraph.hop_expander import RawNode, RawRel, RawSubgraph
-from src.llm.subgraph.anchor_resolver import AnchorResolutions
+from src.llm.anchor_resolver import AnchorResolutions
+from src.llm.hop_expander import RawNode, RawRel, RawSubgraph
 
 log = logging.getLogger(__name__)
 
@@ -58,9 +58,9 @@ _SERVICE_LABELS = {"Trip", "Route", "Platform", "BusStop", "Date"}
 
 # Group 1 = first trimmed, Group 3 = last trimmed (anchors never in this table)
 _LABEL_TO_TRIM_GROUP: dict[str, int] = (
-    {lbl: 1 for lbl in _PROVENANCE_LABELS}
-    | {lbl: 2 for lbl in _SERVICE_LABELS}
-    | {lbl: 3 for lbl in _INTERRUPTION_LABELS}
+    dict.fromkeys(_PROVENANCE_LABELS, 1)
+    | dict.fromkeys(_SERVICE_LABELS, 2)
+    | dict.fromkeys(_INTERRUPTION_LABELS, 3)
 )
 
 
@@ -81,10 +81,10 @@ def _trim_group(node: RawNode) -> int:
 
 @dataclass
 class SerializerResult:
-    context: str         # final Subgraph Context Block
-    token_count: int     # token count of final context (post-trim)
-    trimmed: bool        # True if any node was removed during budget enforcement
-    nodes_removed: int   # count of nodes removed; 0 if trimmed=False
+    context: str  # final Subgraph Context Block
+    token_count: int  # token count of final context (post-trim)
+    trimmed: bool  # True if any node was removed during budget enforcement
+    nodes_removed: int  # count of nodes removed; 0 if trimmed=False
 
 
 # ── ContextSerializer ─────────────────────────────────────────────────────────
@@ -128,7 +128,9 @@ class ContextSerializer:
 
         log.debug(
             "context_serializer | initial serialization | tokens=%d budget=%d | domain=%s",
-            token_count, TOKEN_BUDGET, raw.domain,
+            token_count,
+            TOKEN_BUDGET,
+            raw.domain,
         )
 
         if token_count <= TOKEN_BUDGET:
@@ -150,7 +152,9 @@ class ContextSerializer:
 
         log.debug(
             "context_serializer | budget enforced | tokens=%d nodes_removed=%d | domain=%s",
-            token_count, nodes_removed, raw.domain,
+            token_count,
+            nodes_removed,
+            raw.domain,
         )
 
         return SerializerResult(
@@ -178,7 +182,8 @@ class ContextSerializer:
         """
         # Build trim queue — excludes anchor nodes entirely
         trim_candidates = [
-            n for n in nodes_by_eid.values()
+            n
+            for n in nodes_by_eid.values()
             if n.element_id not in raw.anchor_element_ids
         ]
 
@@ -202,8 +207,11 @@ class ContextSerializer:
             log.debug(
                 "context_serializer | trimmed node | labels=%s hop=%d "
                 "tokens=%d nodes_removed=%d | domain=%s",
-                candidate.labels, candidate.hop_distance,
-                token_count, nodes_removed, raw.domain,
+                candidate.labels,
+                candidate.hop_distance,
+                token_count,
+                nodes_removed,
+                raw.domain,
             )
 
         if token_count > TOKEN_BUDGET:
@@ -213,7 +221,9 @@ class ContextSerializer:
             log.warning(
                 "context_serializer | budget not met after exhausting trim candidates "
                 "| tokens=%d budget=%d | domain=%s",
-                token_count, TOKEN_BUDGET, raw.domain,
+                token_count,
+                TOKEN_BUDGET,
+                raw.domain,
             )
 
         return context, token_count, nodes_removed
@@ -260,7 +270,8 @@ class ContextSerializer:
 
         # ── Non-anchor nodes grouped by label ────────────────────────────────
         non_anchors = [
-            n for n in nodes_by_eid.values()
+            n
+            for n in nodes_by_eid.values()
             if n.element_id not in raw.anchor_element_ids
         ]
 
@@ -382,6 +393,4 @@ def _group_by_primary_label(nodes: list[RawNode]) -> dict[str, list[RawNode]]:
         groups.setdefault(primary, []).append(node)
 
     # Sort groups: higher trim group (more important) first
-    return dict(
-        sorted(groups.items(), key=lambda kv: -_trim_group(kv[1][0]))
-    )
+    return dict(sorted(groups.items(), key=lambda kv: -_trim_group(kv[1][0])))

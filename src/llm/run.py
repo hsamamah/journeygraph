@@ -41,8 +41,8 @@ The Neo4j connection is held open across queries and closed on exit.
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
 import sys
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from src.common.config import get_llm_config
@@ -50,11 +50,11 @@ from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.llm.planner import Planner
 from src.llm.slice_registry import SliceRegistry
-from src.llm.subgraph.subgraph_builder import SubgraphBuilder
+from src.llm.subgraph_builder import SubgraphBuilder
 
 if TYPE_CHECKING:
     from src.llm.planner_output import PlannerOutput
-    from src.llm.subgraph.subgraph_output import SubgraphOutput
+    from src.llm.subgraph_output import SubgraphOutput
 
 log = get_logger(__name__)
 
@@ -261,7 +261,7 @@ def _run_query(
         SubgraphOutput is None when the query is rejected or path is
         text2cypher only.
     """
-    invocation_time = datetime.now(timezone.utc)
+    invocation_time = datetime.now(UTC)
     prefix = f"{label}  " if label else ""
 
     if verbose:
@@ -285,10 +285,7 @@ def _run_query(
     # ── Subgraph path ─────────────────────────────────────────────────────────
     sub_output: SubgraphOutput | None = None
 
-    if (
-        not planner_output.rejected
-        and planner_output.path in {"subgraph", "both"}
-    ):
+    if not planner_output.rejected and planner_output.path in {"subgraph", "both"}:
         builder = SubgraphBuilder(db=db, invocation_time=invocation_time)
         sub_output = builder.run(planner_output)
 
@@ -323,9 +320,7 @@ def _mode_demo(planner: Planner, db: Neo4jManager, *, verbose: bool) -> None:
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, _ = _run_query(
-            planner, db, query, verbose=verbose, label=label
-        )
+        planner_output, _ = _run_query(planner, db, query, verbose=verbose, label=label)
         results.append((expected_domain, planner_output))
 
     print(f"\n{'═' * 56}")
@@ -355,7 +350,7 @@ def _mode_repl(planner: Planner, db: Neo4jManager, *, verbose: bool) -> None:
     while True:
         try:
             query = input("query> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             print("\nExiting.")
             break
 

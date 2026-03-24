@@ -18,15 +18,15 @@ Failure handling:
       failure_reason carrying the exception message. Never raises.
 """
 
+from datetime import UTC, datetime
 import logging
-from datetime import datetime, timezone
 
 from src.common.neo4j_tools import Neo4jManager
+from src.llm.anchor_resolver import AnchorResolver
+from src.llm.context_serializer import ContextSerializer
+from src.llm.hop_expander import HopExpander
 from src.llm.planner_output import PlannerOutput
-from src.llm.subgraph.anchor_resolver import AnchorResolver
-from src.llm.subgraph.hop_expander import HopExpander
-from src.llm.subgraph.context_serializer import ContextSerializer
-from src.llm.subgraph.subgraph_output import SubgraphOutput, make_zero_anchor_fallback
+from src.llm.subgraph_output import SubgraphOutput, make_zero_anchor_fallback
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +50,9 @@ class SubgraphBuilder:
         db: Neo4jManager,
         invocation_time: datetime | None = None,
     ):
-        self._resolver = AnchorResolver(db=db, invocation_time=invocation_time or datetime.now(timezone.utc))
+        self._resolver = AnchorResolver(
+            db=db, invocation_time=invocation_time or datetime.now(UTC)
+        )
         self._expander = HopExpander(db=db)
         self._serializer = ContextSerializer()
 
@@ -72,9 +74,7 @@ class SubgraphBuilder:
         try:
             return self._run(planner_output, domain)
         except Exception as exc:
-            log.exception(
-                "subgraph_builder | unhandled exception | domain=%s", domain
-            )
+            log.exception("subgraph_builder | unhandled exception | domain=%s", domain)
             return SubgraphOutput(
                 context="",
                 node_count=0,
@@ -93,9 +93,7 @@ class SubgraphBuilder:
         resolutions = self._resolver.resolve(planner_output.anchors)
 
         if not resolutions.any_resolved:
-            log.warning(
-                "subgraph_builder | zero anchors resolved | domain=%s", domain
-            )
+            log.warning("subgraph_builder | zero anchors resolved | domain=%s", domain)
             return make_zero_anchor_fallback(domain)
 
         log.debug(
@@ -132,7 +130,10 @@ class SubgraphBuilder:
         log.debug(
             "subgraph_builder | expansion complete | nodes=%d rels=%d "
             "provenance=%d | domain=%s",
-            raw.node_count, len(raw.rels), len(raw.provenance_nodes), domain,
+            raw.node_count,
+            len(raw.rels),
+            len(raw.provenance_nodes),
+            domain,
         )
 
         # ── Stage 3: Serialization and budget enforcement ─────────────────────
@@ -145,7 +146,9 @@ class SubgraphBuilder:
             log.info(
                 "subgraph_builder | context trimmed | nodes_removed=%d "
                 "final_tokens=%d | domain=%s",
-                result.nodes_removed, result.token_count, domain,
+                result.nodes_removed,
+                result.token_count,
+                domain,
             )
 
         return SubgraphOutput(

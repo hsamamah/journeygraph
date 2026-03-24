@@ -21,6 +21,7 @@ llm = [
     # LLM query pipeline — install with: uv sync --extra llm
     "neo4j-graphrag[anthropic]>=1.14.0",
     "pyyaml>=6.0",
+    "tiktoken",
 ]
 demo = [
     # Jupyter demo notebooks — install with: uv sync --extra demo

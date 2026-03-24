@@ -22,12 +22,12 @@ are preserved on RawNode.props and passed downstream intact.
 Output: RawSubgraph — consumed by the Context Serializer (Stage 3).
 """
 
+from dataclasses import dataclass
 import logging
-from dataclasses import dataclass, field
 
 from src.common.neo4j_tools import Neo4jManager
-from src.llm.subgraph.anchor_resolver import AnchorResolutions
-from src.llm.subgraph.expansion_config import DomainExpansionConfig, EXPANSION_CONFIG
+from src.llm.anchor_resolver import AnchorResolutions
+from src.llm.expansion_config import EXPANSION_CONFIG, DomainExpansionConfig
 
 log = logging.getLogger(__name__)
 
@@ -37,10 +37,10 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class RawNode:
-    element_id: str        # Neo4j internal elementId — used for dedup and rel tracking
+    element_id: str  # Neo4j internal elementId — used for dedup and rel tracking
     labels: list[str]
-    props: dict            # all node properties, including domain-specific id property
-    hop_distance: int      # hops from nearest anchor; 0 for anchor nodes themselves
+    props: dict  # all node properties, including domain-specific id property
+    hop_distance: int  # hops from nearest anchor; 0 for anchor nodes themselves
 
 
 @dataclass
@@ -55,11 +55,11 @@ class RawRel:
 class RawSubgraph:
     nodes: list[RawNode]
     rels: list[RawRel]
-    provenance_nodes: list[dict]       # raw TripUpdate / ServiceAlert properties —
-                                       # always fully populated, never trimmed here
-    anchor_element_ids: set[str]       # element IDs of anchor nodes — never trimmed
+    provenance_nodes: list[dict]  # raw TripUpdate / ServiceAlert properties —
+    # always fully populated, never trimmed here
+    anchor_element_ids: set[str]  # element IDs of anchor nodes — never trimmed
     domain: str
-    node_count: int                    # len(nodes) before any trimming — carried to SubgraphOutput
+    node_count: int  # len(nodes) before any trimming — carried to SubgraphOutput
 
 
 # ── HopExpander ───────────────────────────────────────────────────────────────
@@ -97,8 +97,8 @@ class HopExpander:
         config = EXPANSION_CONFIG[domain]
 
         # ── Phase 1: seed anchor nodes ────────────────────────────────────────
-        nodes: dict[str, RawNode] = {}   # element_id → RawNode
-        rels: dict[str, RawRel] = {}     # rel key → RawRel
+        nodes: dict[str, RawNode] = {}  # element_id → RawNode
+        rels: dict[str, RawRel] = {}  # rel key → RawRel
 
         anchor_element_ids: set[str] = set()
 
@@ -117,7 +117,8 @@ class HopExpander:
 
         log.debug(
             "hop_expander | seeded %d anchor nodes | domain=%s",
-            len(nodes), domain,
+            len(nodes),
+            domain,
         )
 
         # ── Phase 2: hop expansion ────────────────────────────────────────────
@@ -142,8 +143,8 @@ class HopExpander:
                     properties(r)               AS rel_props
                 """,
                 {
-                    "frontier":       list(frontier),
-                    "expand_rels":    config.expand_rels,
+                    "frontier": list(frontier),
+                    "expand_rels": config.expand_rels,
                     "include_labels": config.include_labels,
                 },
             )
@@ -173,14 +174,18 @@ class HopExpander:
 
             log.debug(
                 "hop_expander | hop %d complete | new_nodes=%d total_nodes=%d | domain=%s",
-                hop, len(new_frontier), len(nodes), domain,
+                hop,
+                len(new_frontier),
+                len(nodes),
+                domain,
             )
 
             # Stop early if frontier is exhausted before max_hops
             if not new_frontier:
                 log.debug(
                     "hop_expander | frontier exhausted at hop %d | domain=%s",
-                    hop, domain,
+                    hop,
+                    domain,
                 )
                 break
 
@@ -198,7 +203,10 @@ class HopExpander:
 
         log.debug(
             "hop_expander | expansion complete | nodes=%d rels=%d provenance=%d | domain=%s",
-            node_count, len(rels), len(provenance_nodes), domain,
+            node_count,
+            len(rels),
+            len(provenance_nodes),
+            domain,
         )
 
         return RawSubgraph(
@@ -297,22 +305,25 @@ class HopExpander:
                 type(r)        AS rel_type
             """,
             {
-                "element_ids":    list(element_ids),
+                "element_ids": list(element_ids),
                 "provenance_rels": config.provenance_rels,
             },
         )
 
         provenance: list[dict] = []
         for row in rows:
-            provenance.append({
-                "labels":   row["labels"],
-                "props":    row["props"],
-                "rel_type": row["rel_type"],
-            })
+            provenance.append(
+                {
+                    "labels": row["labels"],
+                    "props": row["props"],
+                    "rel_type": row["rel_type"],
+                }
+            )
 
         log.debug(
             "hop_expander | provenance pass | found=%d | domain=%s",
-            len(provenance), domain,
+            len(provenance),
+            domain,
         )
 
         return provenance
