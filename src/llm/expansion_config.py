@@ -4,9 +4,13 @@ from dataclasses import dataclass
 @dataclass
 class DomainExpansionConfig:
     max_hops: int
-    expand_rels: list[str]      # relationship types followed bidirectionally during hop expansion
-    include_labels: list[str]   # node labels retained in the expanded subgraph
-    provenance_rels: list[str]  # fetched in a separate pass post-expansion, always fully populated
+    expand_rels: list[
+        str
+    ]  # relationship types followed bidirectionally during hop expansion
+    include_labels: list[str]  # node labels retained in the expanded subgraph
+    provenance_rels: list[
+        str
+    ]  # fetched in a separate pass post-expansion, always fully populated
 
 
 EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
@@ -16,7 +20,6 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
             "AFFECTS_STOP",
             "AFFECTS_TRIP",
             "SCHEDULED_AT",
-            "ON_DATE",
         ],
         include_labels=[
             "Interruption",
@@ -37,7 +40,6 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
             "CONNECTED_BY",
             "AFFECTS",
             "AFFECTS_STOP",
-            "ON_DATE",
         ],
         include_labels=[
             "Station",
@@ -56,7 +58,6 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
             "AFFECTS_STOP",
             "AFFECTS_TRIP",
             "AFFECTS_ROUTE",
-            "ON_DATE",
             "SOURCED_FROM",
             "HAS_STOP_UPDATE",
             "AT_STOP",
