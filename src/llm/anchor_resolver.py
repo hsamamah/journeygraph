@@ -22,7 +22,7 @@ mapping consumed by Stage 2 hop expansion and surfaced in SubgraphOutput.
 """
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 import logging
 import re
 
@@ -40,8 +40,8 @@ PATHWAY_PREFIX_TO_LABEL: dict[str, str] = {
     "NODE_ELE": "Elevator",
     "NODE_ELV": "Elevator",
     "NODE_ESC": "Escalator",
-    "NODE_FG":  "FareGate",
-    "NODE_MZ":  "Mezzanine",
+    "NODE_FG": "FareGate",
+    "NODE_MZ": "Mezzanine",
     "NODE_STR": "Stairs",
 }
 
@@ -56,20 +56,22 @@ _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 @dataclass
 class AnchorResolutions:
-    resolved_stations: dict[str, str] = field(default_factory=dict)       # name → id
-    resolved_routes: dict[str, str] = field(default_factory=dict)         # name → route_id
-    resolved_dates: dict[str, str] = field(default_factory=dict)          # expr → YYYYMMDD
+    resolved_stations: dict[str, str] = field(default_factory=dict)  # name → id
+    resolved_routes: dict[str, str] = field(default_factory=dict)  # name → route_id
+    resolved_dates: dict[str, str] = field(default_factory=dict)  # expr → YYYYMMDD
     resolved_pathway_nodes: dict[str, str] = field(default_factory=dict)  # name → id
-    failed: dict[str, str] = field(default_factory=dict)                  # anchor → reason
+    failed: dict[str, str] = field(default_factory=dict)  # anchor → reason
 
     @property
     def any_resolved(self) -> bool:
-        return any([
-            self.resolved_stations,
-            self.resolved_routes,
-            self.resolved_dates,
-            self.resolved_pathway_nodes,
-        ])
+        return any(
+            [
+                self.resolved_stations,
+                self.resolved_routes,
+                self.resolved_dates,
+                self.resolved_pathway_nodes,
+            ]
+        )
 
     def as_flat_dict(self) -> dict[str, str]:
         """
@@ -103,9 +105,9 @@ class AnchorResolver:
         self,
         db: Neo4jManager,
         invocation_time: datetime | None = None,
-    ):
+    ) -> None:
         self.db = db
-        self.invocation_time = invocation_time or datetime.now(timezone.utc)
+        self.invocation_time = invocation_time or datetime.now(UTC)
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -137,11 +139,13 @@ class AnchorResolver:
         On ambiguity, the node with the highest degree across SERVES and
         SCHEDULED_AT relationships wins.
         """
+        # SANITIZE: Escape Lucene special characters like / - [ ] ( )
+        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+
         rows = self.db.query(
             """
-            MATCH (s:Station)
-            WHERE toLower(s.name) CONTAINS toLower($name)
-            WITH s
+            CALL db.index.fulltext.queryNodes("physical_station_name", $query) YIELD node
+            WITH node as s
             OPTIONAL MATCH (s)-[r]-()
             WHERE type(r) IN ['SERVES', 'SCHEDULED_AT']
             RETURN s.id      AS id,
@@ -150,85 +154,66 @@ class AnchorResolver:
             ORDER BY degree DESC
             LIMIT 1
             """,
-            {"name": name},
+            {"query": f"*{clean_name}*"},  # Use asterisks for substring-like behavior
         )
 
-        if not rows:
-            log.warning("anchor_resolver | station not found | name=%s", name)
-            result.failed[name] = f"No Station matched '{name}'"
+        if rows:
+            row = rows[0]
+            log.info(
+                "anchor_resolver | station resolved | '%s' → %s (%s, degree=%d)",
+                name,
+                row["id"],
+                row["name"],
+                row["degree"],
+            )
+            result.resolved_stations[name] = row["id"]
             return
 
-        row = rows[0]
-        log.debug(
-            "anchor_resolver | station resolved | '%s' → %s (%s, degree=%d)",
-            name, row["id"], row["name"], row["degree"],
-        )
-        result.resolved_stations[name] = row["id"]
+        log.warning("anchor_resolver | station not found | name=%s", name)
+        result.failed[name] = f"No Station matched '{name}'"
 
     # ── Route resolution ──────────────────────────────────────────────────────
 
     def _resolve_route(self, name: str, result: AnchorResolutions) -> None:
         """
-        Two-pass resolution. No hardcoded values — all matching is against
-        live graph data.
-
-          1. Exact match on route_short_name (case-insensitive).
-          2. Bidirectional match on route_long_name: checks whether the graph
-             value is contained in the input OR the input is contained in the
-             graph value. Handles "Red Line" matching long_name "Red" and
-             "Red" matching long_name "Red" equally.
-
-        First match wins.
+        Single-pass resolution using Full-Text Index.
+        Handles exact short_name matches and bidirectional long_name matches
+        in a single O(log N) operation.
         """
-        # Pass 1 — exact match on route_short_name
+        # We escape the name for Lucene and wrap in wildcards for substring support
+        # e.g., "Red" becomes "*Red*"
+        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+        lucene_query = (
+            f'route_short_name:"{clean_name}" OR route_long_name:*{clean_name}*'
+        )
+
         rows = self.db.query(
             """
-            MATCH (r:Route)
-            WHERE toLower(r.route_short_name) = toLower($name)
-            RETURN r.route_id         AS route_id,
-                   r.route_short_name AS short_name,
-                   r.route_long_name  AS long_name
+            CALL db.index.fulltext.queryNodes("physical_route_name", $query) YIELD node, score
+            RETURN node.route_id         AS route_id,
+                node.route_short_name AS short_name,
+                node.route_long_name  AS long_name,
+                score
+            ORDER BY score DESC
             LIMIT 1
             """,
-            {"name": name},
+            {"query": lucene_query},
         )
 
         if rows:
             row = rows[0]
-            log.debug(
-                "anchor_resolver | route resolved (exact short_name) | '%s' → %s",
-                name, row["route_id"],
+            log.info(
+                "anchor_resolver | route resolved | '%s' → %s (score: %f)",
+                name,
+                row["route_id"],
+                row["score"],
             )
             result.resolved_routes[name] = row["route_id"]
             return
-
-        # Pass 2 — bidirectional match on route_long_name
-        # Checks both directions so "Red Line" matches long_name "Red"
-        # and "Red" also matches long_name "Red".
-        rows = self.db.query(
-            """
-            MATCH (r:Route)
-            WHERE toLower($name) CONTAINS toLower(r.route_long_name)
-               OR toLower(r.route_long_name) CONTAINS toLower($name)
-            RETURN r.route_id         AS route_id,
-                   r.route_short_name AS short_name,
-                   r.route_long_name  AS long_name
-            LIMIT 1
-            """,
-            {"name": name},
-        )
-
-        if rows:
-            row = rows[0]
-            log.debug(
-                "anchor_resolver | route resolved (long_name match) | '%s' → %s",
-                name, row["route_id"],
-            )
-            result.resolved_routes[name] = row["route_id"]
-            return
-
         log.warning("anchor_resolver | route not found | name=%s", name)
         result.failed[name] = f"No Route matched '{name}'"
+
+    # ── Date resolution ──────────────────────────────────────────────────────
 
     def _resolve_date(self, expr: str, result: AnchorResolutions) -> None:
         """
@@ -256,14 +241,15 @@ class AnchorResolver:
         if not rows:
             log.warning(
                 "anchor_resolver | date not in graph | expr=%s normalized=%s",
-                expr, normalized,
+                expr,
+                normalized,
             )
             result.failed[expr] = (
                 f"Date '{normalized}' resolved from '{expr}' not found in graph"
             )
             return
 
-        log.debug("anchor_resolver | date resolved | '%s' → %s", expr, normalized)
+        log.info("anchor_resolver | date resolved | '%s' → %s", expr, normalized)
         result.resolved_dates[expr] = normalized
 
     def _normalize_date_expr(self, expr: str) -> str | None:
@@ -293,8 +279,13 @@ class AnchorResolver:
         if last_match:
             weekday_name = last_match.group(1).capitalize()
             weekday_map = {
-                "Monday": 0, "Tuesday": 1, "Wednesday": 2,
-                "Thursday": 3, "Friday": 4, "Saturday": 5, "Sunday": 6,
+                "Monday": 0,
+                "Tuesday": 1,
+                "Wednesday": 2,
+                "Thursday": 3,
+                "Friday": 4,
+                "Saturday": 5,
+                "Sunday": 6,
             }
             if weekday_name in weekday_map:
                 target_wd = weekday_map[weekday_name]
@@ -340,16 +331,18 @@ class AnchorResolver:
             )
 
             if rows:
-                log.debug(
+                log.info(
                     "anchor_resolver | pathway resolved (tier 1) | '%s' → %s",
-                    name, rows[0]["id"],
+                    name,
+                    rows[0]["id"],
                 )
                 result.resolved_pathway_nodes[name] = rows[0]["id"]
                 return
 
             log.warning(
                 "anchor_resolver | pathway tier 1 miss | name=%s label=%s",
-                name, label,
+                name,
+                label,
             )
             result.failed[name] = f"Pathway node '{name}' not found in graph"
             return
@@ -368,7 +361,7 @@ class AnchorResolver:
         rows = self.db.query(
             """
             MATCH (p:Pathway)-[:BELONGS_TO]->(s:Station)
-            WHERE s.id CONTAINS $station_code
+            WHERE s.id STARTS WITH $station_code
               AND toLower(p.name) CONTAINS toLower($unit_name)
             RETURN p.id AS id
             ORDER BY p.id
@@ -378,16 +371,18 @@ class AnchorResolver:
         )
 
         if rows:
-            log.debug(
+            log.info(
                 "anchor_resolver | pathway resolved (tier 2) | '%s' → %s",
-                name, rows[0]["id"],
+                name,
+                rows[0]["id"],
             )
             result.resolved_pathway_nodes[name] = rows[0]["id"]
             return
 
         log.warning(
             "anchor_resolver | pathway tier 2 miss | name=%s station_code=%s",
-            name, station_code,
+            name,
+            station_code,
         )
         result.failed[name] = (
             f"Pathway node for unit name '{name}' not found "
