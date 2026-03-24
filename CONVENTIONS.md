@@ -44,8 +44,8 @@ Platform nodes.
 **Location:** `src/layers/service_schedule/transform.py` (node_type on Pathway)
 
 `:Pathway` node types are derived from substrings in the `NODE_` stop_id.
-The `:PathwayNode` label was renamed to `:Pathway` in schema v3 — do not
-use `:PathwayNode` in Cypher queries or code, it no longer exists.
+The `:Pathway` label was renamed to `:Pathway` in schema v3 — do not
+use `:Pathway` in Cypher queries or code, it no longer exists.
 
 | Substring      | node_type    | Neo4j Label  |
 |----------------|-------------|--------------|
