@@ -10,7 +10,7 @@ Resolution strategies per type:
                    to SERVES and SCHEDULED_AT relationships).
     routes       — two-pass: exact match on route_short_name, then substring
                    match on route_long_name. Rail line color names resolved
-                   via RAIL_COLOR_TO_LINE before both passes.
+                   via bidirectional route_long_name match against live graph data.
     dates        — normalized to YYYYMMDD matching Date.date property.
                    Relative expressions resolved against invocation time.
     pathway_nodes — prefix-based routing to multi-label (:Pathway:Elevator
@@ -31,19 +31,6 @@ from src.llm.planner_output import PlannerAnchors
 
 log = logging.getLogger(__name__)
 
-
-# ── Rail line color → WMATA route_short_name ─────────────────────────────────
-# Used in route anchor resolution before the two-pass name match.
-# Source: WMATA network. See CONVENTIONS.md → Rail line identifiers.
-
-RAIL_COLOR_TO_LINE: dict[str, str] = {
-    "red": "RD",
-    "blue": "BL",
-    "orange": "OR",
-    "silver": "SV",
-    "green": "GR",
-    "yellow": "YL",
-}
 
 # ── Pathway prefix → Pathway multi-label ─────────────────────────────────────
 # NODE_ prefix embedded in id encodes equipment type.
@@ -182,49 +169,22 @@ class AnchorResolver:
 
     def _resolve_route(self, name: str, result: AnchorResolutions) -> None:
         """
-        Three-step resolution:
-          1. Color name → route_short_name via RAIL_COLOR_TO_LINE dict.
-          2. Exact match on route_short_name (case-insensitive).
-          3. Substring match on route_long_name (case-insensitive).
+        Two-pass resolution. No hardcoded values — all matching is against
+        live graph data.
+
+          1. Exact match on route_short_name (case-insensitive).
+          2. Bidirectional match on route_long_name: checks whether the graph
+             value is contained in the input OR the input is contained in the
+             graph value. Handles "Red Line" matching long_name "Red" and
+             "Red" matching long_name "Red" equally.
+
         First match wins.
         """
-        # Step 1 — color name normalisation
-        color_key = name.strip().lower()
-        resolved_short_name = RAIL_COLOR_TO_LINE.get(color_key)
-        if resolved_short_name:
-            log.debug(
-                "anchor_resolver | route color resolved | '%s' → short_name=%s",
-                name, resolved_short_name,
-            )
-
-        # Step 2 — exact match on route_short_name
-        candidate = resolved_short_name or name
+        # Pass 1 — exact match on route_short_name
         rows = self.db.query(
             """
             MATCH (r:Route)
-            WHERE toLower(r.route_short_name) = toLower($candidate)
-            RETURN r.route_id         AS route_id,
-                   r.route_short_name AS short_name,
-                   r.route_long_name  AS long_name
-            LIMIT 1
-            """,
-            {"candidate": candidate},
-        )
-
-        if rows:
-            row = rows[0]
-            log.debug(
-                "anchor_resolver | route resolved (exact short_name) | '%s' → %s",
-                name, row["route_id"],
-            )
-            result.resolved_routes[name] = row["route_id"]
-            return
-
-        # Step 3 — substring match on route_long_name
-        rows = self.db.query(
-            """
-            MATCH (r:Route)
-            WHERE toLower(r.route_long_name) CONTAINS toLower($name)
+            WHERE toLower(r.route_short_name) = toLower($name)
             RETURN r.route_id         AS route_id,
                    r.route_short_name AS short_name,
                    r.route_long_name  AS long_name
@@ -236,7 +196,32 @@ class AnchorResolver:
         if rows:
             row = rows[0]
             log.debug(
-                "anchor_resolver | route resolved (long_name substring) | '%s' → %s",
+                "anchor_resolver | route resolved (exact short_name) | '%s' → %s",
+                name, row["route_id"],
+            )
+            result.resolved_routes[name] = row["route_id"]
+            return
+
+        # Pass 2 — bidirectional match on route_long_name
+        # Checks both directions so "Red Line" matches long_name "Red"
+        # and "Red" also matches long_name "Red".
+        rows = self.db.query(
+            """
+            MATCH (r:Route)
+            WHERE toLower($name) CONTAINS toLower(r.route_long_name)
+               OR toLower(r.route_long_name) CONTAINS toLower($name)
+            RETURN r.route_id         AS route_id,
+                   r.route_short_name AS short_name,
+                   r.route_long_name  AS long_name
+            LIMIT 1
+            """,
+            {"name": name},
+        )
+
+        if rows:
+            row = rows[0]
+            log.debug(
+                "anchor_resolver | route resolved (long_name match) | '%s' → %s",
                 name, row["route_id"],
             )
             result.resolved_routes[name] = row["route_id"]
@@ -244,8 +229,6 @@ class AnchorResolver:
 
         log.warning("anchor_resolver | route not found | name=%s", name)
         result.failed[name] = f"No Route matched '{name}'"
-
-    # ── Date resolution ───────────────────────────────────────────────────────
 
     def _resolve_date(self, expr: str, result: AnchorResolutions) -> None:
         """
