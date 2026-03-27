@@ -3,8 +3,10 @@
 JourneyGraph LLM Query Pipeline — run script.
 
 Entry point for natural language querying over the WMATA knowledge graph.
-Runs the Planner stage and, where the path warrants it, the Subgraph path
-(AnchorResolver → HopExpander → ContextSerializer). Downstream pipeline
+Runs the Planner stage, shared anchor resolution, and where the path warrants
+it, the Subgraph path (HopExpander → ContextSerializer). Anchor resolution
+runs once after the Planner for all non-rejected queries — resolved IDs are
+shared across both the Subgraph and Text2Cypher paths. Downstream pipeline
 stages (Query Writer, Cypher Validator, Narration Agent) are not yet
 implemented.
 
@@ -49,9 +51,11 @@ from typing import TYPE_CHECKING
 from src.common.config import get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
+from src.llm.anchor_resolver import AnchorResolver
 from src.llm.planner import Planner
 from src.llm.slice_registry import SliceRegistry
 from src.llm.subgraph_builder import SubgraphBuilder
+from src.llm.subgraph_output import make_zero_anchor_fallback
 
 if TYPE_CHECKING:
     from src.llm.planner_output import PlannerOutput
@@ -264,12 +268,36 @@ def _run_query(
     print(header)
     print(_fmt_planner_verbose(planner_output, stage1_scores=stage1_scores))
 
+    if planner_output.rejected:
+        return planner_output, None
+
+    # ── Anchor resolution — shared pre-fork step ──────────────────────────────
+    # Runs for every non-rejected query regardless of path. Both Text2Cypher
+    # and Subgraph receive the same resolved IDs. Zero-anchor failure stops
+    # the pipeline here — the user is asked to restate with clearer entities.
+    resolver = AnchorResolver(db=db, invocation_time=invocation_time)
+    resolutions = resolver.resolve(planner_output.anchors)
+
+    if not resolutions.any_resolved:
+        log.warning("run | zero anchors resolved | query=%r", query)
+        print(
+            "\nNo entities could be resolved from your query. "
+            "Please restate it with a specific station, route, or date "
+            "(e.g. 'Metro Center', 'Red Line', 'yesterday')."
+        )
+        return planner_output, None
+
+    log.info(
+        "run | anchors resolved | %s",
+        resolutions.as_flat_dict(),
+    )
+
     # ── Subgraph path ─────────────────────────────────────────────────────────
     sub_output: SubgraphOutput | None = None
 
-    if not planner_output.rejected and planner_output.path in {"subgraph", "both"}:
-        builder = SubgraphBuilder(db=db, invocation_time=invocation_time)
-        sub_output = builder.run(planner_output)
+    if planner_output.path in {"subgraph", "both"}:
+        builder = SubgraphBuilder(db=db)
+        sub_output = builder.run(planner_output, resolutions)
         print(_fmt_subgraph_verbose(sub_output))
 
     return planner_output, sub_output

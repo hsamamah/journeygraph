@@ -1,28 +1,30 @@
 """
 subgraph_builder.py — Subgraph path orchestrator.
 
-Wires Stage 1 (AnchorResolver), Stage 2 (HopExpander), and Stage 3
-(ContextSerializer) into a single run() call that accepts PlannerOutput
-and returns SubgraphOutput.
+Wires Stage 2 (HopExpander) and Stage 3 (ContextSerializer) into a single
+run() call. Anchor resolution (Stage 1) is performed upstream by the pipeline
+orchestrator and passed in as AnchorResolutions — this allows the same
+resolved anchors to be shared with the Text2Cypher path without a second
+DB round-trip.
 
 This is the only entry point into the Subgraph path. All downstream
 consumers (Narration Agent) interact with SubgraphOutput only — the
 internal stages are not exposed.
 
 Failure handling:
-    - Zero anchors resolved → immediate SubgraphOutput(success=False)
-      via make_zero_anchor_fallback(). No expansion or serialization runs.
+    - Zero anchors in resolutions → immediate SubgraphOutput(success=False)
+      via make_zero_anchor_fallback(). Treated as a defensive guard — the
+      orchestrator should already have checked this before calling run().
     - Expansion returns empty node set → SubgraphOutput(success=False)
       with failure_reason describing which domain produced no results.
     - Any unhandled exception → SubgraphOutput(success=False) with
       failure_reason carrying the exception message. Never raises.
 """
 
-from datetime import UTC, datetime
 import logging
 from typing import TYPE_CHECKING
 
-from src.llm.anchor_resolver import AnchorResolver
+from src.llm.anchor_resolver import AnchorResolutions
 from src.llm.context_serializer import ContextSerializer
 from src.llm.hop_expander import HopExpander
 from src.llm.subgraph_output import SubgraphOutput, make_zero_anchor_fallback
@@ -36,37 +38,43 @@ log = logging.getLogger(__name__)
 
 class SubgraphBuilder:
     """
-    Orchestrates the three-stage Subgraph path.
+    Orchestrates the two-stage Subgraph path (HopExpander + ContextSerializer).
+
+    Anchor resolution is performed upstream by the pipeline orchestrator and
+    passed into run() as AnchorResolutions. SubgraphBuilder has no DB
+    dependency of its own beyond what HopExpander requires for hop queries.
 
     Args:
-        db:              Neo4jManager instance. Injected at construction —
-                         caller owns the connection lifecycle.
-        invocation_time: Pipeline invocation datetime passed to AnchorResolver
-                         for relative date resolution. Defaults to
-                         datetime.utcnow() if not provided. Should be the
-                         same timestamp used across the full pipeline
-                         invocation for consistency.
+        db: Neo4jManager instance. Injected at construction —
+            caller owns the connection lifecycle.
     """
 
     def __init__(
         self,
         db: Neo4jManager,
-        invocation_time: datetime | None = None,
     ) -> None:
-        self._resolver = AnchorResolver(
-            db=db, invocation_time=invocation_time or datetime.now(UTC)
-        )
         self._expander = HopExpander(db=db)
         self._serializer = ContextSerializer()
 
     # ── Public ────────────────────────────────────────────────────────────────
 
-    def run(self, planner_output: PlannerOutput) -> SubgraphOutput:
+    def run(
+        self,
+        planner_output: PlannerOutput,
+        resolutions: AnchorResolutions,
+    ) -> SubgraphOutput:
         """
-        Executes the full Subgraph path for a single pipeline invocation.
+        Executes the Subgraph path (hop expansion + serialization) for a
+        single pipeline invocation.
+
+        Anchor resolution is performed upstream by the pipeline orchestrator.
+        The zero-anchor check here is a defensive guard — the orchestrator
+        should already have returned early before reaching this call.
 
         Args:
-            planner_output: PlannerOutput from the Planner. Consumed read-only.
+            planner_output: PlannerOutput from the Planner. Consumed read-only
+                            for domain and schema_slice_key.
+            resolutions:    AnchorResolutions from the upstream resolver.
 
         Returns:
             SubgraphOutput. Never raises — all failures produce a
@@ -75,7 +83,7 @@ class SubgraphBuilder:
         domain = planner_output.domain
 
         try:
-            return self._run(planner_output, domain)
+            return self._run(resolutions, domain)
         except Exception as exc:
             log.exception("subgraph_builder | unhandled exception | domain=%s", domain)
             return SubgraphOutput(
@@ -91,16 +99,19 @@ class SubgraphBuilder:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _run(self, planner_output: PlannerOutput, domain: str) -> SubgraphOutput:
-        # ── Stage 1: Anchor resolution ────────────────────────────────────────
-        resolutions = self._resolver.resolve(planner_output.anchors)
-
+    def _run(self, resolutions: AnchorResolutions, domain: str) -> SubgraphOutput:
+        # ── Defensive zero-anchor guard ───────────────────────────────────────
+        # The orchestrator should have caught this upstream. Guarded here so
+        # SubgraphBuilder never silently produces an empty expansion.
         if not resolutions.any_resolved:
-            log.warning("subgraph_builder | zero anchors resolved | domain=%s", domain)
+            log.warning(
+                "subgraph_builder | zero anchors in resolutions (unexpected) | domain=%s",
+                domain,
+            )
             return make_zero_anchor_fallback(domain)
 
         log.info(
-            "subgraph_builder | anchors resolved | stations=%d routes=%d "
+            "subgraph_builder | anchors received | stations=%d routes=%d "
             "dates=%d pathway_nodes=%d | domain=%s",
             len(resolutions.resolved_stations),
             len(resolutions.resolved_routes),
@@ -109,7 +120,7 @@ class SubgraphBuilder:
             domain,
         )
 
-        # ── Stage 2: Hop expansion ────────────────────────────────────────────
+        # ── Stage 1: Hop expansion ────────────────────────────────────────────
         raw = self._expander.expand(resolutions=resolutions, domain=domain)
 
         if raw.node_count == 0:
@@ -139,7 +150,7 @@ class SubgraphBuilder:
             domain,
         )
 
-        # ── Stage 3: Serialization and budget enforcement ─────────────────────
+        # ── Stage 2: Serialization and budget enforcement ─────────────────────
         result = self._serializer.serialize_and_enforce(
             raw=raw,
             resolutions=resolutions,
