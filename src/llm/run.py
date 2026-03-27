@@ -52,10 +52,10 @@ from src.common.config import get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.llm.anchor_resolver import AnchorResolver
+from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
 from src.llm.planner import Planner
 from src.llm.slice_registry import SliceRegistry
 from src.llm.subgraph_builder import SubgraphBuilder
-from src.llm.subgraph_output import make_zero_anchor_fallback
 
 if TYPE_CHECKING:
     from src.llm.planner_output import PlannerOutput
@@ -124,6 +124,32 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Promote SliceRegistry validation warnings to hard failures. "
             "Applies to missing node labels and relationship types. "
             "Always active in --demo mode."
+        ),
+    )
+
+    parser.add_argument(
+        "--candidate-limit",
+        type=int,
+        default=1,
+        metavar="K",
+        help=(
+            "Maximum candidates fetched per anchor mention from the full-text "
+            "index. K=1 (default) uses the top result directly — no "
+            "disambiguation runs. K>1 enables graph-assisted disambiguation "
+            "via the configured strategy. Use with --strategy for A/B testing."
+        ),
+    )
+
+    parser.add_argument(
+        "--strategy",
+        choices=["topk", "coherence"],
+        default="topk",
+        help=(
+            "Disambiguation strategy. 'topk' (default) takes the "
+            "highest-scoring candidate per mention — no graph query. "
+            "'coherence' uses typed relationship weights across all anchor "
+            "types to pick the most coherent candidate set. Ignored when "
+            "--candidate-limit=1."
         ),
     )
 
@@ -217,6 +243,7 @@ def _fmt_subgraph_verbose(sub: SubgraphOutput) -> str:
     lines.append(f"  node_count        : {sub.node_count}")
     lines.append(f"  trimmed           : {sub.trimmed}")
     lines.append(f"  anchor_resolutions: {sub.anchor_resolutions}")
+    lines.append(f"  resolver_config   : {sub.resolver_config}")
     lines.append(f"  provenance_nodes  : {len(sub.provenance_nodes)} node(s)")
     lines.append("─── Subgraph Context Block ───────────────────────────────")
     if sub.context:
@@ -234,26 +261,32 @@ def _run_query(
     db: Neo4jManager,
     query: str,
     *,
+    candidate_limit: int = 1,
+    strategy: str = "topk",
     label: str | None = None,
 ) -> tuple[PlannerOutput, SubgraphOutput | None]:
     """
     Execute a single query through the Planner and, where the path
     warrants it, the Subgraph path.
 
-    invocation_time is captured once here and passed to SubgraphBuilder
-    so relative date expressions resolve consistently within the same
+    invocation_time is captured once here so relative date expressions
+    (yesterday, last Tuesday) resolve consistently within the same
     pipeline invocation.
 
     Args:
-        planner: Initialised Planner instance.
-        db:      Live Neo4jManager — held open across queries.
-        query:   Raw query string.
-        label:   Optional prefix for --demo mode e.g. '[1/4]'.
+        planner:         Initialised Planner instance.
+        db:              Live Neo4jManager — held open across queries.
+        query:           Raw query string.
+        candidate_limit: Max candidates per mention from full-text index.
+                         1 = baseline, no disambiguation.
+        strategy:        'topk' or 'coherence'. Ignored when
+                         candidate_limit=1.
+        label:           Optional prefix for --demo mode e.g. '[1/4]'.
 
     Returns:
         (PlannerOutput, SubgraphOutput | None)
-        SubgraphOutput is None when the query is rejected or path is
-        text2cypher only.
+        SubgraphOutput is None when the query is rejected, zero anchors
+        resolve, or path is text2cypher only.
     """
     invocation_time = datetime.now(UTC)
     prefix = f"{label}  " if label else ""
@@ -275,7 +308,15 @@ def _run_query(
     # Runs for every non-rejected query regardless of path. Both Text2Cypher
     # and Subgraph receive the same resolved IDs. Zero-anchor failure stops
     # the pipeline here — the user is asked to restate with clearer entities.
-    resolver = AnchorResolver(db=db, invocation_time=invocation_time)
+    disambiguation_strategy = (
+        TypeWeightedCoherenceStrategy() if strategy == "coherence" else None
+    )
+    resolver = AnchorResolver(
+        db=db,
+        invocation_time=invocation_time,
+        strategy=disambiguation_strategy,
+        candidate_limit=candidate_limit,
+    )
     resolutions = resolver.resolve(planner_output.anchors)
 
     if not resolutions.any_resolved:
@@ -288,7 +329,8 @@ def _run_query(
         return planner_output, None
 
     log.info(
-        "run | anchors resolved | %s",
+        "run | anchors resolved | config=%s | %s",
+        resolver.config,
         resolutions.as_flat_dict(),
     )
 
@@ -297,7 +339,11 @@ def _run_query(
 
     if planner_output.path in {"subgraph", "both"}:
         builder = SubgraphBuilder(db=db)
-        sub_output = builder.run(planner_output, resolutions)
+        sub_output = builder.run(
+            planner_output,
+            resolutions,
+            resolver_config=resolver.config,
+        )
         print(_fmt_subgraph_verbose(sub_output))
 
     return planner_output, sub_output
@@ -310,11 +356,20 @@ def _mode_default(
     planner: Planner,
     db: Neo4jManager,
     query: str,
+    *,
+    candidate_limit: int,
+    strategy: str,
 ) -> None:
-    _run_query(planner, db, query)
+    _run_query(planner, db, query, candidate_limit=candidate_limit, strategy=strategy)
 
 
-def _mode_demo(planner: Planner, db: Neo4jManager) -> None:
+def _mode_demo(
+    planner: Planner,
+    db: Neo4jManager,
+    *,
+    candidate_limit: int,
+    strategy: str,
+) -> None:
     """
     Four hardcoded smoke test queries.
     Always runs in strict mode (enforced at registry construction by caller).
@@ -324,7 +379,14 @@ def _mode_demo(planner: Planner, db: Neo4jManager) -> None:
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, _ = _run_query(planner, db, query, label=label)
+        planner_output, _ = _run_query(
+            planner,
+            db,
+            query,
+            candidate_limit=candidate_limit,
+            strategy=strategy,
+            label=label,
+        )
         results.append((expected_domain, planner_output))
 
     print(f"\n{'═' * 56}")
@@ -346,12 +408,16 @@ def _mode_demo(planner: Planner, db: Neo4jManager) -> None:
 def _mode_repl(
     planner: Planner,
     db: Neo4jManager,
+    *,
+    candidate_limit: int,
+    strategy: str,
 ) -> None:
     """
     Interactive query loop.
     Exits cleanly on 'quit', 'exit', or Ctrl+C / Ctrl+D.
     """
     print("JourneyGraph query pipeline — interactive mode")
+    print(f"Resolver: candidate_limit={candidate_limit}  strategy={strategy}")
     print("Type a question, or 'quit' to exit.\n")
 
     while True:
@@ -367,7 +433,13 @@ def _mode_repl(
             print("Exiting.")
             break
 
-        _run_query(planner, db, query, verbose=verbose)
+        _run_query(
+            planner,
+            db,
+            query,
+            candidate_limit=candidate_limit,
+            strategy=strategy,
+        )
         print()
 
 
@@ -400,7 +472,8 @@ def _startup(*, strict: bool) -> tuple[Planner, Neo4jManager]:
     log.info("Neo4j connected")
 
     registry = SliceRegistry(db, strict=strict)
-    # Connection remains open — SubgraphBuilder needs it at query time.
+    # Connection remains open — AnchorResolver and SubgraphBuilder need it
+    # at query time.
 
     planner = Planner(registry, llm_config, strict=strict)
     return planner, db
@@ -418,6 +491,15 @@ def main(argv: list[str] | None = None) -> None:
 
     args = _parse_args(argv)
     strict = args.strict or args.demo
+    candidate_limit: int = args.candidate_limit
+    strategy: str = args.strategy
+
+    if candidate_limit > 1:
+        log.info(
+            "Resolver config — candidate_limit=%d strategy=%s",
+            candidate_limit,
+            strategy,
+        )
 
     try:
         planner, db = _startup(strict=strict)
@@ -427,11 +509,27 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         if args.demo:
-            _mode_demo(planner, db)
+            _mode_demo(
+                planner,
+                db,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+            )
         elif args.repl:
-            _mode_repl(planner, db)
+            _mode_repl(
+                planner,
+                db,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+            )
         elif args.query:
-            _mode_default(planner, db, args.query)
+            _mode_default(
+                planner,
+                db,
+                args.query,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+            )
         else:
             _parse_args(["--help"])
     finally:

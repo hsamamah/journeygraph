@@ -15,6 +15,10 @@ class SubgraphOutput:
     domain: str
     success: bool                 # False if zero anchors resolved or expansion failed
     failure_reason: str | None    # 'No anchors resolved from query' | None
+    resolver_config: dict = field(default_factory=dict)
+                                  # {'candidate_limit': 1, 'strategy': 'TopKStrategy'};
+                                  # populated from AnchorResolver.config;
+                                  # empty dict on failure or when not provided
 
 
 def make_zero_anchor_fallback(domain: str) -> SubgraphOutput:
@@ -35,4 +39,6 @@ def make_zero_anchor_fallback(domain: str) -> SubgraphOutput:
         domain=domain,
         success=False,
         failure_reason="No anchors resolved from query",
+        resolver_config={},
     )
+

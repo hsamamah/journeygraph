@@ -62,6 +62,7 @@ class SubgraphBuilder:
         self,
         planner_output: PlannerOutput,
         resolutions: AnchorResolutions,
+        resolver_config: dict | None = None,
     ) -> SubgraphOutput:
         """
         Executes the Subgraph path (hop expansion + serialization) for a
@@ -72,18 +73,22 @@ class SubgraphBuilder:
         should already have returned early before reaching this call.
 
         Args:
-            planner_output: PlannerOutput from the Planner. Consumed read-only
-                            for domain and schema_slice_key.
-            resolutions:    AnchorResolutions from the upstream resolver.
+            planner_output:  PlannerOutput from the Planner. Consumed read-only
+                             for domain and schema_slice_key.
+            resolutions:     AnchorResolutions from the upstream resolver.
+            resolver_config: AnchorResolver.config dict for pipeline trace
+                             and A/B testing. Passed through to SubgraphOutput.
+                             Defaults to empty dict if not provided.
 
         Returns:
             SubgraphOutput. Never raises — all failures produce a
             SubgraphOutput with success=False and a populated failure_reason.
         """
         domain = planner_output.domain
+        cfg = resolver_config or {}
 
         try:
-            return self._run(resolutions, domain)
+            return self._run(resolutions, domain, cfg)
         except Exception as exc:
             log.exception("subgraph_builder | unhandled exception | domain=%s", domain)
             return SubgraphOutput(
@@ -95,14 +100,18 @@ class SubgraphBuilder:
                 domain=domain,
                 success=False,
                 failure_reason=f"Unhandled exception in Subgraph path: {exc}",
+                resolver_config=cfg,
             )
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _run(self, resolutions: AnchorResolutions, domain: str) -> SubgraphOutput:
+    def _run(
+        self,
+        resolutions: AnchorResolutions,
+        domain: str,
+        resolver_config: dict,
+    ) -> SubgraphOutput:
         # ── Defensive zero-anchor guard ───────────────────────────────────────
-        # The orchestrator should have caught this upstream. Guarded here so
-        # SubgraphBuilder never silently produces an empty expansion.
         if not resolutions.any_resolved:
             log.warning(
                 "subgraph_builder | zero anchors in resolutions (unexpected) | domain=%s",
@@ -139,6 +148,7 @@ class SubgraphBuilder:
                     f"Hop expansion produced no nodes for domain '{domain}'. "
                     "Anchors resolved but no connected subgraph found."
                 ),
+                resolver_config=resolver_config,
             )
 
         log.info(
@@ -174,6 +184,7 @@ class SubgraphBuilder:
             domain=domain,
             success=True,
             failure_reason=None,
+            resolver_config=resolver_config,
         )
 
     @staticmethod
