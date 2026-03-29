@@ -54,17 +54,17 @@ class TypeWeightedCoherenceStrategy:
     """
 
     _PAIR_WEIGHTS: dict[tuple[str, str, str], float] = {
-        ("station",      "SERVES",       "route"):        1.0,
-        ("route",        "SERVES",       "station"):      1.0,
-        ("station",      "ON_ROUTE",     "route"):        0.9,
-        ("route",        "ON_ROUTE",     "station"):      0.9,
-        ("station",      "BELONGS_TO",   "pathway_node"): 0.9,
-        ("pathway_node", "BELONGS_TO",   "station"):      0.9,
-        ("station",      "SCHEDULED_AT", "route"):        0.7,
-        ("station",      "AFFECTS_STOP", "station"):      0.6,
-        ("station",      "AFFECTS_TRIP", "route"):        0.5,
+        ("station", "SERVES", "route"): 1.0,
+        ("route", "SERVES", "station"): 1.0,
+        ("station", "ON_ROUTE", "route"): 0.9,
+        ("route", "ON_ROUTE", "station"): 0.9,
+        ("station", "BELONGS_TO", "pathway_node"): 0.9,
+        ("pathway_node", "BELONGS_TO", "station"): 0.9,
+        ("station", "SCHEDULED_AT", "route"): 0.7,
+        ("station", "AFFECTS_STOP", "station"): 0.6,
+        ("station", "AFFECTS_TRIP", "route"): 0.5,
     }
-    _DEFAULT_WEIGHT: float = 0.1   # low but nonzero for unlisted cross-type edges
+    _DEFAULT_WEIGHT: float = 0.1  # low but nonzero for unlisted cross-type edges
 
     def select(
         self,
@@ -160,12 +160,9 @@ class TypeWeightedCoherenceStrategy:
         scores = self._compute_scores(candidates, db)
 
         for mention, cands in ambiguous.items():
-            top_score = max(
-                scores.get(c.element_id, 0.0) for c in cands
-            )
+            top_score = max(scores.get(c.element_id, 0.0) for c in cands)
             tied = [
-                c.node_id for c in cands
-                if scores.get(c.element_id, 0.0) == top_score
+                c.node_id for c in cands if scores.get(c.element_id, 0.0) == top_score
             ]
             result[mention] = tied
 
@@ -181,9 +178,7 @@ class TypeWeightedCoherenceStrategy:
         Returns {element_id: coherence_score} for all candidates.
         """
         eid_to_cand: dict[str, Candidate] = {
-            c.element_id: c
-            for cands in candidates.values()
-            for c in cands
+            c.element_id: c for cands in candidates.values() for c in cands
         }
         all_eids = list(eid_to_cand.keys())
 
@@ -204,7 +199,7 @@ class TypeWeightedCoherenceStrategy:
 
         for row in rows:
             from_cand = eid_to_cand.get(row["from_eid"])
-            to_cand   = eid_to_cand.get(row["to_eid"])
+            to_cand = eid_to_cand.get(row["to_eid"])
 
             if from_cand is None or to_cand is None:
                 continue
@@ -214,6 +209,6 @@ class TypeWeightedCoherenceStrategy:
             triple = (from_cand.anchor_type, row["rel_type"], to_cand.anchor_type)
             weight = self._PAIR_WEIGHTS.get(triple, self._DEFAULT_WEIGHT)
             scores[row["from_eid"]] += weight
-            scores[row["to_eid"]]   += weight
+            scores[row["to_eid"]] += weight
 
         return scores

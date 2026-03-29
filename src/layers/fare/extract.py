@@ -16,7 +16,6 @@ Optional (gracefully absent):
   fare_transfer_rules — WMATA may not publish this file in all feed versions
 """
 
-
 from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger

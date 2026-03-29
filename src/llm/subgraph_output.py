@@ -3,22 +3,22 @@ from dataclasses import dataclass, field
 
 @dataclass
 class SubgraphOutput:
-    context: str                  # serialized Subgraph Context Block after budget enforcement;
-                                  # empty string on failure
-    node_count: int               # total nodes after full expansion and provenance pass,
-                                  # before any trimming; 0 on failure
-    trimmed: bool                 # True if any node was removed during budget enforcement
+    context: str  # serialized Subgraph Context Block after budget enforcement;
+    # empty string on failure
+    node_count: int  # total nodes after full expansion and provenance pass,
+    # before any trimming; 0 on failure
+    trimmed: bool  # True if any node was removed during budget enforcement
     provenance_nodes: list[dict]  # complete post-expansion provenance fetch ---
-                                  # TripUpdate/ServiceAlert raw properties;
-                                  # never affected by trimming; empty list on failure
-    anchor_resolutions: dict      # {'Metro Center': 'STN_A01'}; empty dict on failure
+    # TripUpdate/ServiceAlert raw properties;
+    # never affected by trimming; empty list on failure
+    anchor_resolutions: dict  # {'Metro Center': 'STN_A01'}; empty dict on failure
     domain: str
-    success: bool                 # False if zero anchors resolved or expansion failed
-    failure_reason: str | None    # 'No anchors resolved from query' | None
+    success: bool  # False if zero anchors resolved or expansion failed
+    failure_reason: str | None  # 'No anchors resolved from query' | None
     resolver_config: dict = field(default_factory=dict)
-                                  # {'candidate_limit': 1, 'strategy': 'TopKStrategy'};
-                                  # populated from AnchorResolver.config;
-                                  # empty dict on failure or when not provided
+    # {'candidate_limit': 1, 'strategy': 'TopKStrategy'};
+    # populated from AnchorResolver.config;
+    # empty dict on failure or when not provided
 
 
 def make_zero_anchor_fallback(domain: str) -> SubgraphOutput:
@@ -41,4 +41,3 @@ def make_zero_anchor_fallback(domain: str) -> SubgraphOutput:
         failure_reason="No anchors resolved from query",
         resolver_config={},
     )
-

@@ -17,7 +17,6 @@ Optional (gracefully absent):
   calendar_dates  → exceptions applied on top of calendar
 """
 
-
 from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger

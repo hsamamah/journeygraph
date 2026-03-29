@@ -28,7 +28,6 @@ Prerequisites:
     python pipeline.py --layers physical fare
 """
 
-
 from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger

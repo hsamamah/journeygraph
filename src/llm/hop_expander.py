@@ -259,7 +259,11 @@ class HopExpander:
             ),
             (
                 "MATCH (n:Pathway) WHERE n.id IN $ids",
-                [id for ids in resolutions.resolved_pathway_nodes.values() for id in ids],
+                [
+                    id
+                    for ids in resolutions.resolved_pathway_nodes.values()
+                    for id in ids
+                ],
             ),
         ]
 

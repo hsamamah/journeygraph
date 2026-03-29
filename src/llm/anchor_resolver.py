@@ -72,11 +72,11 @@ class Candidate:
     Consumed by Phase 2 (DisambiguationStrategy.select()).
     """
 
-    node_id: str       # graph node ID (station id, route_id, YYYYMMDD, etc.)
+    node_id: str  # graph node ID (station id, route_id, YYYYMMDD, etc.)
     display_name: str  # human-readable label for logging and trace
-    score: float       # full-text index score — higher = better string match
-    element_id: str    # Neo4j elementId — used by graph-querying strategies
-    anchor_type: str   # 'station' | 'route' | 'date' | 'pathway_node'
+    score: float  # full-text index score — higher = better string match
+    element_id: str  # Neo4j elementId — used by graph-querying strategies
+    anchor_type: str  # 'station' | 'route' | 'date' | 'pathway_node'
 
 
 # ── DisambiguationStrategy Protocol ──────────────────────────────────────────
@@ -143,9 +143,7 @@ class TopKStrategy:
         db: "Neo4jManager | None",
     ) -> dict[str, str]:
         return {
-            mention: cands[0].node_id
-            for mention, cands in candidates.items()
-            if cands
+            mention: cands[0].node_id for mention, cands in candidates.items() if cands
         }
 
     def select_with_ties(
@@ -158,9 +156,7 @@ class TopKStrategy:
             if not cands:
                 continue
             top_score = cands[0].score
-            result[mention] = [
-                c.node_id for c in cands if c.score == top_score
-            ]
+            result[mention] = [c.node_id for c in cands if c.score == top_score]
         return result
 
 
@@ -169,11 +165,11 @@ class TopKStrategy:
 
 @dataclass
 class AnchorResolutions:
-    resolved_stations:      dict[str, list[str]] = field(default_factory=dict)
+    resolved_stations: dict[str, list[str]] = field(default_factory=dict)
     # name → [id, ...]  list of length 1 when unambiguous, >1 when tied
-    resolved_routes:        dict[str, list[str]] = field(default_factory=dict)
+    resolved_routes: dict[str, list[str]] = field(default_factory=dict)
     # name → [route_id, ...]
-    resolved_dates:         dict[str, list[str]] = field(default_factory=dict)
+    resolved_dates: dict[str, list[str]] = field(default_factory=dict)
     # expr → [YYYYMMDD, ...]  dates are deterministic so always length 1
     resolved_pathway_nodes: dict[str, list[str]] = field(default_factory=dict)
     # name → [id, ...]
@@ -311,13 +307,11 @@ class AnchorResolver:
         if self._k == 1:
             # Short-circuit: single candidate per mention, strategy irrelevant.
             log.info(
-                "anchor_resolver | k=1 baseline | disambiguation skipped | "
-                "strategy=%s",
+                "anchor_resolver | k=1 baseline | disambiguation skipped | strategy=%s",
                 type(self._strategy).__name__,
             )
             selected: dict[str, list[str]] = {
-                mention: [cands[0].node_id]
-                for mention, cands in all_candidates.items()
+                mention: [cands[0].node_id] for mention, cands in all_candidates.items()
             }
         else:
             log.info(
@@ -336,25 +330,32 @@ class AnchorResolver:
                 result.resolved_stations[mention] = node_ids
                 log.info(
                     "anchor_resolver | station resolved | '%s' → %s%s",
-                    mention, node_ids, " (tied)" if tied else "",
+                    mention,
+                    node_ids,
+                    " (tied)" if tied else "",
                 )
             elif anchor_type == "route":
                 result.resolved_routes[mention] = node_ids
                 log.info(
                     "anchor_resolver | route resolved | '%s' → %s%s",
-                    mention, node_ids, " (tied)" if tied else "",
+                    mention,
+                    node_ids,
+                    " (tied)" if tied else "",
                 )
             elif anchor_type == "date":
                 result.resolved_dates[mention] = node_ids
                 log.info(
                     "anchor_resolver | date resolved | '%s' → %s",
-                    mention, node_ids,
+                    mention,
+                    node_ids,
                 )
             elif anchor_type == "pathway_node":
                 result.resolved_pathway_nodes[mention] = node_ids
                 log.info(
                     "anchor_resolver | pathway resolved | '%s' → %s%s",
-                    mention, node_ids, " (tied)" if tied else "",
+                    mention,
+                    node_ids,
+                    " (tied)" if tied else "",
                 )
 
         # Record mentions the strategy declined to resolve
@@ -366,9 +367,7 @@ class AnchorResolver:
                 )
 
         if not result.any_resolved:
-            log.warning(
-                "anchor_resolver | zero anchors resolved | anchors=%s", anchors
-            )
+            log.warning("anchor_resolver | zero anchors resolved | anchors=%s", anchors)
 
         return result
 
@@ -478,7 +477,8 @@ class AnchorResolver:
         if not rows:
             log.warning(
                 "anchor_resolver | date not in graph | expr=%s normalized=%s",
-                expr, normalized,
+                expr,
+                normalized,
             )
             return []
 
@@ -521,8 +521,13 @@ class AnchorResolver:
         if last_match:
             weekday_name = last_match.group(1).capitalize()
             weekday_map = {
-                "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
-                "Friday": 4, "Saturday": 5, "Sunday": 6,
+                "Monday": 0,
+                "Tuesday": 1,
+                "Wednesday": 2,
+                "Thursday": 3,
+                "Friday": 4,
+                "Saturday": 5,
+                "Sunday": 6,
             }
             if weekday_name in weekday_map:
                 target_wd = weekday_map[weekday_name]
@@ -563,7 +568,8 @@ class AnchorResolver:
             if not rows:
                 log.warning(
                     "anchor_resolver | pathway tier-1 miss | name=%s label=%s",
-                    name, label,
+                    name,
+                    label,
                 )
                 return []
 
@@ -600,7 +606,8 @@ class AnchorResolver:
         if not rows:
             log.warning(
                 "anchor_resolver | pathway tier-2 miss | name=%s station_code=%s",
-                name, station_code,
+                name,
+                station_code,
             )
             return []
 
@@ -636,4 +643,3 @@ class AnchorResolver:
         """
         match = re.match(r"^([A-Za-z]\d{2})\b", unit_name.strip())
         return match.group(1).upper() if match else None
-

@@ -7,6 +7,7 @@ without risking circular imports.
 
 from typing import Optional
 
+
 def normalize_gtfs_time(time_str) -> Optional[int]:
     """
     Convert a GTFS HH:MM:SS time string to total seconds from start of service day.

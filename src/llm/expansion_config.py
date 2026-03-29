@@ -11,7 +11,9 @@ class DomainExpansionConfig:
     provenance_rels: list[
         str
     ]  # fetched in a separate pass post-expansion, always fully populated
-    max_results_per_hop: int = 500  # LIMIT applied per hop query — prevents runaway expansion on large graphs
+    max_results_per_hop: int = (
+        500  # LIMIT applied per hop query — prevents runaway expansion on large graphs
+    )
 
 
 EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
