@@ -94,53 +94,9 @@ class TypeWeightedCoherenceStrategy:
                 result[mention] = cands[0].node_id
             return result
 
-        # Build element_id → Candidate lookup for weight calculation.
-        # Include ALL candidates from ALL mentions — unambiguous single-candidate
-        # mentions must be in the graph query as scoring anchors. Without them,
-        # cross-type edges (e.g. Farragut candidates ↔ Red Line) are never found
-        # and coherence scores stay at 0.
-        eid_to_cand: dict[str, Candidate] = {
-            c.element_id: c
-            for cands in candidates.values()   # all mentions, not just ambiguous
-            for c in cands
-        }
-
-        # Gather element IDs of all candidates across all mentions
-        all_eids = list(eid_to_cand.keys())
-
-        # Single round-trip: all edges between any pair of candidates
-        rows = db.query(
-            """
-            MATCH (a)-[r]-(b)
-            WHERE elementId(a) IN $eids
-              AND elementId(b) IN $eids
-              AND elementId(a) <> elementId(b)
-            RETURN elementId(a) AS from_eid,
-                   elementId(b) AS to_eid,
-                   type(r)      AS rel_type
-            """,
-            {"eids": all_eids},
-        )
-
-        # Accumulate coherence scores per element_id
-        scores: dict[str, float] = {eid: 0.0 for eid in all_eids}
-
-        for row in rows:
-            from_cand = eid_to_cand.get(row["from_eid"])
-            to_cand = eid_to_cand.get(row["to_eid"])
-
-            if from_cand is None or to_cand is None:
-                continue
-
-            # Exclude same-type pairs — no self-reinforcement
-            if from_cand.anchor_type == to_cand.anchor_type:
-                continue
-
-            triple = (from_cand.anchor_type, row["rel_type"], to_cand.anchor_type)
-            weight = self._PAIR_WEIGHTS.get(triple, self._DEFAULT_WEIGHT)
-
-            scores[row["from_eid"]] += weight
-            scores[row["to_eid"]] += weight
+        # Compute coherence scores across all candidates (including unambiguous
+        # mentions as scoring anchors — see _compute_scores docstring).
+        scores = self._compute_scores(candidates, db)
 
         log.debug(
             "TypeWeightedCoherenceStrategy | coherence scores | %s",
@@ -165,3 +121,99 @@ class TypeWeightedCoherenceStrategy:
             )
 
         return result
+
+    def select_with_ties(
+        self,
+        candidates: dict[str, list[Candidate]],
+        db: "Neo4jManager | None",
+    ) -> dict[str, list[str]]:
+        """
+        Like select(), but returns all candidates that share the top coherence
+        score for each ambiguous mention rather than breaking ties via string
+        score.
+
+        Used by the validation script to expose genuine ambiguity — when two
+        candidates score equally on graph coherence both are returned and the
+        caller can display them together.
+
+        Unambiguous mentions (single candidate) and db=None cases behave
+        identically to select().
+
+        Returns:
+            {mention: [node_id, ...]} — list of length 1 when unambiguous,
+            list of length > 1 when candidates are genuinely tied on coherence.
+        """
+        result: dict[str, list[str]] = {}
+        ambiguous: dict[str, list[Candidate]] = {}
+
+        for mention, cands in candidates.items():
+            if len(cands) == 1:
+                result[mention] = [cands[0].node_id]
+            else:
+                ambiguous[mention] = cands
+
+        if not ambiguous or db is None:
+            for mention, cands in ambiguous.items():
+                result[mention] = [cands[0].node_id]
+            return result
+
+        scores = self._compute_scores(candidates, db)
+
+        for mention, cands in ambiguous.items():
+            top_score = max(
+                scores.get(c.element_id, 0.0) for c in cands
+            )
+            tied = [
+                c.node_id for c in cands
+                if scores.get(c.element_id, 0.0) == top_score
+            ]
+            result[mention] = tied
+
+        return result
+
+    def _compute_scores(
+        self,
+        candidates: dict[str, list[Candidate]],
+        db: "Neo4jManager",
+    ) -> dict[str, float]:
+        """
+        Shared scoring logic used by both select() and select_with_ties().
+        Returns {element_id: coherence_score} for all candidates.
+        """
+        eid_to_cand: dict[str, Candidate] = {
+            c.element_id: c
+            for cands in candidates.values()
+            for c in cands
+        }
+        all_eids = list(eid_to_cand.keys())
+
+        rows = db.query(
+            """
+            MATCH (a)-[r]-(b)
+            WHERE elementId(a) IN $eids
+              AND elementId(b) IN $eids
+              AND elementId(a) <> elementId(b)
+            RETURN elementId(a) AS from_eid,
+                   elementId(b) AS to_eid,
+                   type(r)      AS rel_type
+            """,
+            {"eids": all_eids},
+        )
+
+        scores: dict[str, float] = {eid: 0.0 for eid in all_eids}
+
+        for row in rows:
+            from_cand = eid_to_cand.get(row["from_eid"])
+            to_cand   = eid_to_cand.get(row["to_eid"])
+
+            if from_cand is None or to_cand is None:
+                continue
+            if from_cand.anchor_type == to_cand.anchor_type:
+                continue
+
+            triple = (from_cand.anchor_type, row["rel_type"], to_cand.anchor_type)
+            weight = self._PAIR_WEIGHTS.get(triple, self._DEFAULT_WEIGHT)
+            scores[row["from_eid"]] += weight
+            scores[row["to_eid"]]   += weight
+
+        return scores
