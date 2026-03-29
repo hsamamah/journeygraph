@@ -84,7 +84,8 @@ class Candidate:
 
 class DisambiguationStrategy(Protocol):
     """
-    Selects one candidate per anchor mention from the full candidate pool.
+    Selects one candidate per anchor mention from the full candidate pool,
+    and exposes ties when multiple candidates score equally.
 
     Receives all candidates across all anchor types in a single call so
     cross-anchor coherence strategies can see the full query context.
@@ -98,10 +99,13 @@ class DisambiguationStrategy(Protocol):
                     don't need their own connection. None for strategies that
                     don't require graph access.
 
-    Returns:
-        {mention: node_id} for successfully disambiguated anchors.
-        Mentions the strategy cannot resolve are omitted — the resolver
-        treats omission as a failure for that mention.
+    Returns (select):
+        {mention: node_id} — one ID per mention.
+        Mentions the strategy cannot resolve are omitted.
+
+    Returns (select_with_ties):
+        {mention: [node_id, ...]} — all equally-scoring candidates per mention.
+        List of length 1 when unambiguous, >1 when tied.
     """
 
     def select(
@@ -109,6 +113,12 @@ class DisambiguationStrategy(Protocol):
         candidates: dict[str, list[Candidate]],
         db: "Neo4jManager | None",
     ) -> dict[str, str]: ...
+
+    def select_with_ties(
+        self,
+        candidates: dict[str, list[Candidate]],
+        db: "Neo4jManager | None",
+    ) -> dict[str, list[str]]: ...
 
 
 # ── TopKStrategy — default, no graph queries ──────────────────────────────────
@@ -120,6 +130,11 @@ class TopKStrategy:
     Equivalent to the original top-1 resolver behaviour — no graph queries.
     Used automatically when candidate_limit=1 (short-circuited in resolve())
     and as the fallback when no other strategy is provided.
+
+    select_with_ties() returns all candidates sharing the top string score.
+    In practice the full-text index rarely produces exact ties on score, so
+    this usually returns a single-element list — but surfaces the tie honestly
+    when it does occur.
     """
 
     def select(
@@ -133,17 +148,37 @@ class TopKStrategy:
             if cands
         }
 
+    def select_with_ties(
+        self,
+        candidates: dict[str, list[Candidate]],
+        db: "Neo4jManager | None",
+    ) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = {}
+        for mention, cands in candidates.items():
+            if not cands:
+                continue
+            top_score = cands[0].score
+            result[mention] = [
+                c.node_id for c in cands if c.score == top_score
+            ]
+        return result
+
 
 # ── Output type ───────────────────────────────────────────────────────────────
 
 
 @dataclass
 class AnchorResolutions:
-    resolved_stations: dict[str, str] = field(default_factory=dict)  # name → id
-    resolved_routes: dict[str, str] = field(default_factory=dict)  # name → route_id
-    resolved_dates: dict[str, str] = field(default_factory=dict)  # expr → YYYYMMDD
-    resolved_pathway_nodes: dict[str, str] = field(default_factory=dict)  # name → id
-    failed: dict[str, str] = field(default_factory=dict)  # anchor → reason
+    resolved_stations:      dict[str, list[str]] = field(default_factory=dict)
+    # name → [id, ...]  list of length 1 when unambiguous, >1 when tied
+    resolved_routes:        dict[str, list[str]] = field(default_factory=dict)
+    # name → [route_id, ...]
+    resolved_dates:         dict[str, list[str]] = field(default_factory=dict)
+    # expr → [YYYYMMDD, ...]  dates are deterministic so always length 1
+    resolved_pathway_nodes: dict[str, list[str]] = field(default_factory=dict)
+    # name → [id, ...]
+    failed: dict[str, str] = field(default_factory=dict)
+    # anchor → reason — mentions that produced zero candidates or were declined
 
     @property
     def any_resolved(self) -> bool:
@@ -156,10 +191,12 @@ class AnchorResolutions:
             ]
         )
 
-    def as_flat_dict(self) -> dict[str, str]:
+    def as_flat_dict(self) -> dict[str, list[str]]:
         """
-        Flat merged view for SubgraphOutput.anchor_resolutions and pipeline trace.
-        All four dicts merged — keys are original string anchors, values are node IDs.
+        Flat merged view across all four types.
+        Keys are original string anchors, values are lists of resolved IDs.
+        A list of length 1 is unambiguous. Length >1 means candidates tied
+        and all are included — the caller decides how to use them.
         """
         return {
             **self.resolved_stations,
@@ -273,14 +310,13 @@ class AnchorResolver:
         # ── Phase 2: disambiguation ────────────────────────────────────────────
         if self._k == 1:
             # Short-circuit: single candidate per mention, strategy irrelevant.
-            # Logged explicitly so A/B traces clearly show which mode ran.
             log.info(
                 "anchor_resolver | k=1 baseline | disambiguation skipped | "
                 "strategy=%s",
                 type(self._strategy).__name__,
             )
-            selected = {
-                mention: cands[0].node_id
+            selected: dict[str, list[str]] = {
+                mention: [cands[0].node_id]
                 for mention, cands in all_candidates.items()
             }
         else:
@@ -290,34 +326,35 @@ class AnchorResolver:
                 type(self._strategy).__name__,
                 len(all_candidates),
             )
-            selected = self._strategy.select(all_candidates, self.db)
+            selected = self._strategy.select_with_ties(all_candidates, self.db)
 
-        # Map selected node_ids back into typed AnchorResolutions dicts
-        for mention, node_id in selected.items():
+        # Map selected node_id lists back into typed AnchorResolutions dicts
+        for mention, node_ids in selected.items():
             anchor_type = mention_to_type.get(mention)
+            tied = len(node_ids) > 1
             if anchor_type == "station":
-                result.resolved_stations[mention] = node_id
+                result.resolved_stations[mention] = node_ids
                 log.info(
-                    "anchor_resolver | station resolved | '%s' → %s",
-                    mention, node_id,
+                    "anchor_resolver | station resolved | '%s' → %s%s",
+                    mention, node_ids, " (tied)" if tied else "",
                 )
             elif anchor_type == "route":
-                result.resolved_routes[mention] = node_id
+                result.resolved_routes[mention] = node_ids
                 log.info(
-                    "anchor_resolver | route resolved | '%s' → %s",
-                    mention, node_id,
+                    "anchor_resolver | route resolved | '%s' → %s%s",
+                    mention, node_ids, " (tied)" if tied else "",
                 )
             elif anchor_type == "date":
-                result.resolved_dates[mention] = node_id
+                result.resolved_dates[mention] = node_ids
                 log.info(
                     "anchor_resolver | date resolved | '%s' → %s",
-                    mention, node_id,
+                    mention, node_ids,
                 )
             elif anchor_type == "pathway_node":
-                result.resolved_pathway_nodes[mention] = node_id
+                result.resolved_pathway_nodes[mention] = node_ids
                 log.info(
-                    "anchor_resolver | pathway resolved | '%s' → %s",
-                    mention, node_id,
+                    "anchor_resolver | pathway resolved | '%s' → %s%s",
+                    mention, node_ids, " (tied)" if tied else "",
                 )
 
         # Record mentions the strategy declined to resolve
@@ -599,42 +636,4 @@ class AnchorResolver:
         """
         match = re.match(r"^([A-Za-z]\d{2})\b", unit_name.strip())
         return match.group(1).upper() if match else None
-
-        """
-        Fuzzy case-insensitive substring match on name.
-        On ambiguity, the node with the highest degree across SERVES and
-        SCHEDULED_AT relationships wins.
-        """
-        # SANITIZE: Escape Lucene special characters like / - [ ] ( )
-        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
-
-        rows = self.db.query(
-            """
-            CALL db.index.fulltext.queryNodes("physical_station_name", $query) YIELD node
-            WITH node as s
-            OPTIONAL MATCH (s)-[r]-()
-            WHERE type(r) IN ['SERVES', 'SCHEDULED_AT']
-            RETURN s.id      AS id,
-                   s.name    AS name,
-                   count(r)  AS degree
-            ORDER BY degree DESC
-            LIMIT 1
-            """,
-            {"query": f"*{clean_name}*"},  # Use asterisks for substring-like behavior
-        )
-
-        if rows:
-            row = rows[0]
-            log.info(
-                "anchor_resolver | station resolved | '%s' → %s (%s, degree=%d)",
-                name,
-                row["id"],
-                row["name"],
-                row["degree"],
-            )
-            result.resolved_stations[name] = row["id"]
-            return
-
-        log.warning("anchor_resolver | station not found | name=%s", name)
-        result.failed[name] = f"No Station matched '{name}'"
 

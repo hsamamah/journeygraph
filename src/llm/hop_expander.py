@@ -232,22 +232,23 @@ class HopExpander:
         Populates nodes and anchor_element_ids in place.
         """
         seed_specs: list[tuple[str, list[str]]] = [
-            # (Cypher MATCH clause, list of resolved IDs)
+            # (Cypher MATCH clause, flat list of resolved IDs)
+            # .values() now returns list[list[str]] — flatten to list[str]
             (
                 "MATCH (n:Station) WHERE n.id IN $ids",
-                list(resolutions.resolved_stations.values()),
+                [id for ids in resolutions.resolved_stations.values() for id in ids],
             ),
             (
                 "MATCH (n:Route) WHERE n.route_id IN $ids",
-                list(resolutions.resolved_routes.values()),
+                [id for ids in resolutions.resolved_routes.values() for id in ids],
             ),
             (
                 "MATCH (n:Date) WHERE n.date IN $ids",
-                list(resolutions.resolved_dates.values()),
+                [id for ids in resolutions.resolved_dates.values() for id in ids],
             ),
             (
                 "MATCH (n:Pathway) WHERE n.id IN $ids",
-                list(resolutions.resolved_pathway_nodes.values()),
+                [id for ids in resolutions.resolved_pathway_nodes.values() for id in ids],
             ),
         ]
 
