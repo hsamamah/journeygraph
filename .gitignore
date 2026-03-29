@@ -29,6 +29,10 @@ htmlcov/
 .ruff_cache/
 .uv_cache/
 
+# ── Claude Code (local only) ──────────────────────────────────────────────────
+.claude/
+CLAUDE.md
+
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
