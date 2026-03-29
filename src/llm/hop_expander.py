@@ -141,13 +141,24 @@ class HopExpander:
                     elementId(startNode(r))     AS from_eid,
                     elementId(endNode(r))       AS to_eid,
                     properties(r)               AS rel_props
+                LIMIT $max_results_per_hop
                 """,
                 {
                     "frontier": list(frontier),
                     "expand_rels": config.expand_rels,
                     "include_labels": config.include_labels,
+                    "max_results_per_hop": config.max_results_per_hop,
                 },
             )
+
+            if len(rows) == config.max_results_per_hop:
+                log.warning(
+                    "hop_expander | hop %d hit max_results_per_hop limit (%d) "
+                    "— subgraph may be incomplete | domain=%s",
+                    hop,
+                    config.max_results_per_hop,
+                    domain,
+                )
 
             for row in rows:
                 n_eid = row["neighbor_eid"]

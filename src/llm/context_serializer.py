@@ -192,27 +192,35 @@ class ContextSerializer:
         trim_candidates.sort(key=lambda n: (_trim_group(n), -n.hop_distance))
 
         nodes_removed = 0
-        context = ""
 
         for candidate in trim_candidates:
             if token_count <= TOKEN_BUDGET:
                 break
 
+            # Subtract the token cost of this node's lines before mutating
+            # nodes_by_eid — the delta includes the node's own block and the
+            # back-reference rel lines it contributes to other nodes' blocks.
+            # Section header count changes are not tracked here (minor error,
+            # corrected by the final _count_tokens call below).
+            token_count -= _removal_token_delta(candidate, nodes_by_eid, rel_index)
+
             del nodes_by_eid[candidate.element_id]
             nodes_removed += 1
 
-            context = self._serialize(raw, nodes_by_eid, rel_index, resolutions)
-            token_count = _count_tokens(context)
-
             log.info(
                 "context_serializer | trimmed node | labels=%s hop=%d "
-                "tokens=%d nodes_removed=%d | domain=%s",
+                "tokens≈%d nodes_removed=%d | domain=%s",
                 candidate.labels,
                 candidate.hop_distance,
                 token_count,
                 nodes_removed,
                 raw.domain,
             )
+
+        # Single final serialization — corrects any approximation error from
+        # delta tracking (section header count changes, Total nodes line, etc.)
+        context = self._serialize(raw, nodes_by_eid, rel_index, resolutions)
+        token_count = _count_tokens(context)
 
         if token_count > TOKEN_BUDGET:
             # Trim candidates exhausted — only anchors remain. Log and continue:
@@ -312,6 +320,33 @@ class ContextSerializer:
 
 def _count_tokens(text: str) -> int:
     return len(_ENCODING.encode(text))
+
+
+def _removal_token_delta(
+    node: RawNode,
+    nodes_by_eid: dict[str, RawNode],
+    rel_index: dict[str, list[RawRel]],
+) -> int:
+    """
+    Estimates the token reduction from removing a node from the serialized context.
+
+    Each relationship between A and B renders twice — once in A's block and once
+    in B's block — so both perspectives are counted. Section header count changes
+    (e.g. "Route nodes (3)" → "Route nodes (2)") are not tracked here; the
+    caller corrects any residual error with a final _count_tokens pass.
+    """
+    eid = node.element_id
+    lines: list[str] = [_format_node(node)]
+
+    for rel in rel_index.get(eid, []):
+        other_eid = (
+            rel.to_element_id if rel.from_element_id == eid else rel.from_element_id
+        )
+        if other_eid in nodes_by_eid:
+            lines.append(_format_rel(rel, eid, nodes_by_eid))
+            lines.append(_format_rel(rel, other_eid, nodes_by_eid))
+
+    return _count_tokens("\n".join(lines))
 
 
 def _build_rel_index(rels: list[RawRel]) -> dict[str, list[RawRel]]:
