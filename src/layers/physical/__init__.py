@@ -6,13 +6,18 @@ Orchestrates extract → transform → load for all physical infrastructure node
 and relationships. Exposes a single run() entry point consumed by pipeline.py.
 
 Nodes created:
-  :Station, :StationEntrance, :Platform, :FareGate, :Pathway
+  :Station, :StationEntrance, :Platform, :FareGate, :BusStop, :Pathway, :Level
 
-Relationships created:
-  Station      -[:CONTAINS]->        StationEntrance, Platform, FareGate
-  Pathway      -[:LINKS]->           StationEntrance, Platform, FareGate
-  Pathway      -[:ADJACENT_TO]->     Pathway
-  FareGate     -[:BELONGS_TO]->      Station
+Relationships created (physical layer only):
+  Station -[:CONTAINS]-> StationEntrance
+  Station -[:CONTAINS]-> Platform
+  Station -[:CONTAINS]-> FareGate
+  (stop entity) -[:LINKS]-> Pathway   ← from_stop direction, all 5 entity types
+  Pathway -[:LINKS]-> (stop entity)   ← to_stop direction, all 5 entity types
+  Pathway -[:LINKS]-> Pathway         ← chain via deferred GTFS generic node pivots
+
+Not built here (owned by other layers):
+  FareGate -[:BELONGS_TO]-> Station   ← built by fare layer
 
 Prerequisites:
   Physical layer must run before fare layer.

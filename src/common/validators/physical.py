@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from src.common.utils import safe_int
 from src.common.validators.base import ValidationResult, run_count_check
 
 if TYPE_CHECKING:
@@ -121,29 +122,73 @@ def validate_pre_transform(
             f"{no_parent['stop_id'].tolist()[:5]}"
         )
 
-    # ── Check 3: all pathway endpoints reference a known stop_id ─────────────
+    # ── Check 3: all pathway endpoints are resolvable ─────────────────────────
     #
-    # Pathway endpoints that don't resolve to a stop produce :Pathway nodes
-    # with no :LINKS relationships — dangling nodes that cannot be traversed.
-    # Warn rather than block: some endpoints may reference bus stops loaded
-    # as a different node type not covered by the physical LINKS dispatch.
+    # Each pathway endpoint stop_id must be one of:
+    #   matched  — exists in a loaded node partition (Station, StationEntrance,
+    #              Platform, FareGate, BusStop) — a LINKS rel will be created
+    #   deferred — GTFS generic node (location_type=3, no _FG_) used as a
+    #              pivot for pathway-to-pathway chaining — intentionally unloaded
+    #
+    # Block on:
+    #   gap     — in stops.txt but no partition predicate matches it
+    #   missing — not in stops.txt at all
 
-    pathway_stop_ids = pd.concat(
-        [
-            pathways["from_stop_id"].dropna(),
-            pathways["to_stop_id"].dropna(),
-        ]
-    ).unique()
-
-    unknown = [s for s in pathway_stop_ids if str(s).strip() not in known_stop_ids]
-    if unknown:
-        result.warn(
-            f"{len(unknown)} pathway endpoint stop_id(s) not found in stops.txt — "
-            f"LINKS relationships for those pathways will be missing: {unknown[:5]}"
+    loaded_ids = (
+        set(stops[stops["location_type"] == _LOC_STATION]["stop_id"].astype(str))
+        | set(
+            stops[
+                (stops["location_type"] == _LOC_ENTRANCE)
+                & stops["stop_id"].str.upper().str.startswith("ENT_", na=False)
+            ]["stop_id"].astype(str)
         )
-    else:
+        | set(
+            stops[
+                # location_type=4 is a non-standard extension used by this GTFS feed;
+                # treated identically to platforms (location_type=0).
+                stops["location_type"].isin([0, 4])
+                & stops["stop_id"].str.upper().str.startswith("PF_", na=False)
+            ]["stop_id"].astype(str)
+        )
+        | set(stops[stops["stop_id"].str.contains("_FG_", na=False)]["stop_id"].astype(str))
+        | set(stops[stops["stop_id"].apply(safe_int).notnull() & (stops["location_type"] != 3)]["stop_id"].astype(str))
+    )
+    deferred_ids = set(
+        stops[
+            (stops["location_type"] == 3)
+            & ~stops["stop_id"].str.contains("_FG_", na=False)
+        ]["stop_id"].astype(str)
+    )
+
+    all_endpoints = (
+        pd.concat([pathways["from_stop_id"].dropna(), pathways["to_stop_id"].dropna()])
+        .astype(str)
+        .unique()
+    )
+
+    gap_ids = [
+        s
+        for s in all_endpoints
+        if s not in loaded_ids and s in known_stop_ids and s not in deferred_ids
+    ]
+    missing_ids = [s for s in all_endpoints if s not in known_stop_ids]
+    deferred_count = sum(1 for s in all_endpoints if s in deferred_ids)
+    matched_count = sum(1 for s in all_endpoints if s in loaded_ids)
+
+    if gap_ids:
+        result.fail(
+            f"{len(gap_ids)} pathway endpoint stop_id(s) exist in stops.txt but match "
+            f"no loaded partition predicate (gap) — pipeline cannot proceed: {gap_ids[:5]}"
+        )
+    if missing_ids:
+        result.fail(
+            f"{len(missing_ids)} pathway endpoint stop_id(s) not found in stops.txt "
+            f"at all — pipeline cannot proceed: {missing_ids[:5]}"
+        )
+    if not gap_ids and not missing_ids:
         result.note(
-            f"All {len(pathway_stop_ids)} pathway endpoint stop_ids exist in stops.txt"
+            f"All pathway endpoints resolved: {matched_count} matched, "
+            f"{deferred_count} deferred (generic node pivots)"
         )
 
     # ── Check 4: all pathway_mode values are within GTFS range 1–7 ───────────
@@ -282,25 +327,24 @@ def validate_post_load(neo4j_manager: "Neo4jManager") -> ValidationResult:
         else:
             result.fail(err_fn(n))
 
-    # ── Check 9: every Pathway has at least one [:LINKS] relationship ─────────
+    # ── Check 9: every Pathway participates in at least one [:LINKS] relationship
     #
-    # A Pathway with no LINKS rel is a dangling node — its endpoint stop_id
-    # was not written (partition gap or missing stop type). Warn rather than
-    # block: some pathways may link only to bus stops, which are loaded as
-    # BusStop nodes not yet covered by the LINKS dispatch.
+    # Checks both directions (undirected) — a Pathway may have only incoming
+    # LINKS (when its from_stop is a stop entity) or only outgoing LINKS
+    # (when its to_stop is a stop entity), or only pathway-to-pathway LINKS.
+    # A Pathway with no LINKS in either direction is a dangling node indicating
+    # a classification or load failure.
 
     n = run_count_check(
         neo4j_manager,
-        "MATCH (p:Pathway) WHERE NOT (p)-[:LINKS]->() RETURN count(p) AS n",
+        "MATCH (p:Pathway) WHERE NOT (p)-[:LINKS]-() RETURN count(p) AS n",
     )
     if n == 0:
-        result.note("All Pathway nodes have at least one [:LINKS] relationship")
+        result.note("All Pathway nodes participate in at least one [:LINKS] relationship")
     else:
-        result.warn(
-            f"{n} Pathway node(s) have no [:LINKS] relationship — likely bus stop "
-            f"endpoints (location_type=0, numeric id) dispatched to the Platform "
-            f"loader which only MATCHes :Platform nodes, not :BusStop. "
-            f"See queries/physical/relationships.cypher — Pathway -[:LINKS]-> Platform."
+        result.fail(
+            f"{n} Pathway node(s) have no [:LINKS] relationship in either direction — "
+            f"indicates a classification gap or load failure"
         )
 
     # ── Check 10: every Station has at least one CONTAINS→Platform ────────────

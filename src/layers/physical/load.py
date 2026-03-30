@@ -16,10 +16,9 @@ Load order (respects foreign key dependencies):
   8. Pathway label migrations  (requires Pathway nodes to exist)
   9. Station  -[:CONTAINS]-> StationEntrance
   10. Station -[:CONTAINS]-> Platform
-  11. Pathway -[:LINKS]->    StationEntrance
-  12. Pathway -[:LINKS]->    Platform
-  13. Pathway -[:LINKS]->    Station
-  14. Pathway -[:LINKS]->    FareGate
+  11. (stop_entity) -[:LINKS]-> Pathway   (from_stop direction, all 5 entity types)
+  12. Pathway -[:LINKS]-> (stop_entity)   (to_stop direction, all 5 entity types)
+  13. Pathway -[:LINKS]-> Pathway         (chain via deferred generic node pivot)
 
 Cypher is stored in queries/physical/ and loaded at runtime — no
 inline Cypher strings in this module.
@@ -76,8 +75,14 @@ def _extract_statement(cypher: str, label_hint: str) -> str:
 
 def _df_to_rows(df: pd.DataFrame) -> list[dict]:
     """Convert DataFrame to list of dicts, replacing NaN/NaT with None."""
+    def _to_none(v: object) -> object:
+        try:
+            return None if pd.isna(v) else v
+        except (TypeError, ValueError):
+            return v  # non-scalar (list, array) — pass through unchanged
+
     return [
-        {k: (None if pd.isna(v) else v) for k, v in row.items()}
+        {k: _to_none(v) for k, v in row.items()}
         for row in df.to_dict(orient="records")
     ]
 
@@ -146,8 +151,8 @@ def _load_pathway_labels(neo4j: Neo4jManager) -> None:
         "Pathway :Escalator label",
         "Pathway :Stairs label",
         "Pathway :Walkway label",
-        "Pathway :PaidZone label",
-        "Pathway :UnpaidZone label",
+        "Pathway :Paid label",
+        "Pathway :Unpaid label",
     ]
     for hint in label_hints:
         stmt = _extract_statement(nodes_cypher, hint)
@@ -183,38 +188,24 @@ def _load_station_contains_platform(neo4j: Neo4jManager, stops: pd.DataFrame) ->
     neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
-def _load_pathway_links(neo4j: Neo4jManager, links: dict[str, pd.DataFrame]) -> None:
-    """
-    Wire Pathway -[:LINKS]-> (StationEntrance | Platform | Station | FareGate).
+def _load_station_contains_faregate(neo4j: Neo4jManager, stops: pd.DataFrame) -> None:
+    log.info("physical load: Station -[:CONTAINS]-> FareGate (%d rels)", len(stops))
+    cypher = _extract_statement(
+        _load_query("relationships.cypher"), "Station -[:CONTAINS]-> FareGate"
+    )
+    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
-    Replaces the previous row-by-row loop with a single vectorized partition
-    pass. Each pathway contributes up to two rows (from_stop_id + to_stop_id).
-    We join against stops to resolve location_type, then dispatch each
-    partition to its dedicated batch UNWIND statement.
 
-    Complexity: O(n) pandas ops instead of O(n) × individual Neo4j writes.
-    """
+def _load_from_links(neo4j: Neo4jManager, from_links: dict[str, pd.DataFrame]) -> None:
+    """Wire (stop_entity)-[:LINKS]->(Pathway) for all from_stop partitions."""
     rel_cypher = _load_query("relationships.cypher")
-
     dispatch = [
-        (
-            "Pathway -[:LINKS]-> StationEntrance",
-            links["ENTRANCE"],
-        ),
-        (
-            "Pathway -[:LINKS]-> Platform",
-            links["PLATFORM"],
-        ),
-        (
-            "Pathway -[:LINKS]-> Station",
-            links["STATION"],
-        ),
-        (
-            "Pathway -[:LINKS]-> FareGate",
-            links["FAREGATE"],
-        ),
+        ("StationEntrance -[:LINKS]-> Pathway (from_stop)", from_links["ENTRANCE"]),
+        ("Platform -[:LINKS]-> Pathway (from_stop)", from_links["PLATFORM"]),
+        ("Station -[:LINKS]-> Pathway (from_stop)", from_links["STATION"]),
+        ("FareGate -[:LINKS]-> Pathway (from_stop)", from_links["FAREGATE"]),
+        ("BusStop -[:LINKS]-> Pathway (from_stop)", from_links["BUS_STOP"]),
     ]
-
     for hint, partition in dispatch:
         if partition.empty:
             log.warning("physical load: %s — 0 rows, skipping", hint)
@@ -222,9 +213,44 @@ def _load_pathway_links(neo4j: Neo4jManager, links: dict[str, pd.DataFrame]) -> 
         log.info("physical load: %s (%d rels)", hint, len(partition))
         stmt = _extract_statement(rel_cypher, hint)
         neo4j.execute_write(
-            stmt,
-            parameters={"rows": _df_to_rows(partition[["pathway_id", "stop_id"]])},
+            stmt, parameters={"rows": _df_to_rows(partition[["pathway_id", "stop_id"]])}
         )
+
+
+def _load_to_links(neo4j: Neo4jManager, to_links: dict[str, pd.DataFrame]) -> None:
+    """Wire (Pathway)-[:LINKS]->(stop_entity) for all to_stop partitions."""
+    rel_cypher = _load_query("relationships.cypher")
+    dispatch = [
+        ("Pathway -[:LINKS]-> StationEntrance (to_stop)", to_links["ENTRANCE"]),
+        ("Pathway -[:LINKS]-> Platform (to_stop)", to_links["PLATFORM"]),
+        ("Pathway -[:LINKS]-> Station (to_stop)", to_links["STATION"]),
+        ("Pathway -[:LINKS]-> FareGate (to_stop)", to_links["FAREGATE"]),
+        ("Pathway -[:LINKS]-> BusStop (to_stop)", to_links["BUS_STOP"]),
+    ]
+    for hint, partition in dispatch:
+        if partition.empty:
+            log.warning("physical load: %s — 0 rows, skipping", hint)
+            continue
+        log.info("physical load: %s (%d rels)", hint, len(partition))
+        stmt = _extract_statement(rel_cypher, hint)
+        neo4j.execute_write(
+            stmt, parameters={"rows": _df_to_rows(partition[["pathway_id", "stop_id"]])}
+        )
+
+
+def _load_pathway_chain_links(neo4j: Neo4jManager, chains: pd.DataFrame) -> None:
+    """Wire (Pathway)-[:LINKS]->(Pathway) through deferred generic node pivots."""
+    if chains.empty:
+        log.info("physical load: Pathway -[:LINKS]-> Pathway (chain) — 0 rows, skipping")
+        return
+    log.info("physical load: Pathway -[:LINKS]-> Pathway (chain) (%d rels)", len(chains))
+    stmt = _extract_statement(
+        _load_query("relationships.cypher"), "Pathway -[:LINKS]-> Pathway (chain)"
+    )
+    neo4j.execute_write(
+        stmt,
+        parameters={"rows": _df_to_rows(chains[["from_pathway_id", "to_pathway_id"]])},
+    )
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -248,7 +274,10 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     faregates = result["faregates"]
     station_contains_platform = result["station_contains_platform"]
     station_contains_entrance = result["station_contains_entrance"]
-    links = result["links"]
+    station_contains_faregate = result["station_contains_faregate"]
+    from_links = result["from_links"]
+    to_links = result["to_links"]
+    pathway_chain_links = result["pathway_chain_links"]
 
     # Shared FeedInfo node (idempotent — safe if already created by another layer)
     ensure_feed_info(neo4j, result["feed_info"])
@@ -271,7 +300,10 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     # ── Relationships ─────────────────────────────────────────────────────────
     _load_station_contains_entrance(neo4j, station_contains_entrance)
     _load_station_contains_platform(neo4j, station_contains_platform)
-    _load_pathway_links(neo4j, links)
+    _load_station_contains_faregate(neo4j, station_contains_faregate)
+    _load_from_links(neo4j, from_links)
+    _load_to_links(neo4j, to_links)
+    _load_pathway_chain_links(neo4j, pathway_chain_links)
 
     # ── Post-load validation ───────────────────────────────────────────────────
     log.info("physical load: running post-load validation")
