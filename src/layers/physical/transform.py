@@ -183,13 +183,25 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
     # Tag pathway sides — use frozensets for O(1) membership, not Series (which
     # checks the index, not the values).
+    #
+    # Zone anchors beyond ENT_*/PF_* — this feed uses a naming convention where
+    # generic nodes (location_type=3) that sit immediately beside a fare barrier
+    # carry a _PAID or _UNPAID suffix (e.g. NODE_A01_C01_N_FG_PAID).  These are
+    # not loaded as graph nodes but their zone side is known, so we include them
+    # as anchors when tagging pathway endpoints.
     entrance_ids = frozenset(entrances["id"])
     platform_ids = frozenset(platforms["id"])
+    faregate_unpaid_ids = frozenset(
+        stops_df[stops_df["id"].str.endswith("_UNPAID", na=False)]["id"]
+    )
+    faregate_paid_ids = frozenset(
+        stops_df[stops_df["id"].str.endswith("_PAID", na=False)]["id"]
+    )
     node_side = {}
     for stop in stops_df["id"]:
-        if stop in entrance_ids:
+        if stop in entrance_ids or stop in faregate_unpaid_ids:
             node_side[stop] = "UNPAID"
-        elif stop in platform_ids:
+        elif stop in platform_ids or stop in faregate_paid_ids:
             node_side[stop] = "PAID"
         else:
             node_side[stop] = "UNKNOWN"
@@ -198,6 +210,15 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     pathways_df["to_side"] = pathways_df["to_stop_id"].map(node_side)
 
     # Categorize pathways
+    #
+    # The paid zone in this feed has no direct PAID→PAID pathway hops — every
+    # paid-zone pathway connects a known anchor (FG_PAID or PF_*) to a generic
+    # intermediate node (PLF_* boarding points, mezzanine nodes, etc.).  The
+    # same holds for the unpaid zone.  We therefore use a one-anchor rule:
+    # if one endpoint is PAID and neither is UNPAID → postgate_internal (Paid);
+    # if one endpoint is UNPAID and neither is PAID → pregate_internal (Unpaid).
+    # Pathways where both endpoints are UNKNOWN (deep mezzanine hops) cannot be
+    # zone-classified without graph traversal and remain mixed_non_gate for now.
     def categorize(row):
         mode = int(row["mode"])
         fs, ts = row["from_side"], row["to_side"]
@@ -209,6 +230,11 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
             return "pregate_internal"
         if fs == "PAID" and ts == "PAID":
             return "postgate_internal"
+        # One-anchor: one known side, the other a generic intermediate node
+        if ("PAID" in (fs, ts)) and "UNPAID" not in (fs, ts):
+            return "postgate_internal"
+        if ("UNPAID" in (fs, ts)) and "PAID" not in (fs, ts):
+            return "pregate_internal"
         return "mixed_non_gate"
 
     pathways_df["side_category"] = pathways_df.apply(categorize, axis=1)

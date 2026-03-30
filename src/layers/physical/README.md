@@ -34,9 +34,9 @@ Entry point is `run()` in `__init__.py`, called by `pipeline.py`. It orchestrate
 | `Station` | `id` | `stops.txt` `location_type=1` | — |
 | `StationEntrance` | `id` | `stops.txt` `location_type=2`, prefix `ENT_` | — |
 | `Platform` | `id` | `stops.txt` `location_type=0/4`, prefix `PF_` | — |
-| `FareGate` | `id` | `stops.txt` pattern `_FG_` | — |
+| `FareGate` | `id` | `stops.txt` pattern `_FG_` in `stop_id` | — |
 | `BusStop` | `id` | `stops.txt`, numeric `stop_id`, not `location_type=3` | — |
-| `Pathway` | `id` | `pathways.txt` | `:Escalator` (mode 4), `:Elevator` (mode 5), `:Stairs` (mode 2), `:Walkway` (mode 1), `:PaidZone`, `:UnpaidZone` |
+| `Pathway` | `id` | `pathways.txt` | `:Escalator` (mode 4), `:Elevator` (mode 5), `:Stairs` (mode 2), `:Walkway` (mode 1), `:Paid`, `:Unpaid` |
 | `Level` | `level_id` | `levels.txt` | — |
 
 All node `id` values are the GTFS `stop_id` (renamed by transform). Uniqueness constraints are applied on first load — see `queries/physical/constraints.cypher`.
@@ -61,6 +61,44 @@ All node `id` values are the GTFS `stop_id` (renamed by transform). Uniqueness c
 | `(Pathway)-[:LINKS]->(Pathway)` | Deferred generic node pivot (see below) |
 
 `LINKS` is always directional: the from-entity links into the Pathway, and the Pathway links out to the to-entity. Bidirectional pathways (`is_bidirectional=1`) receive reverse links on both stop-entity sides and both pathway-chain sides.
+
+---
+
+## Pathway Zone Classification
+
+Each `Pathway` node carries a `zone` property (`'Paid'` or `'Unpaid'`) and a corresponding multi-label (`:Paid` or `:Unpaid`). This is derived entirely in `transform.py` — there is no zone column in the GTFS source.
+
+### Zone anchors
+
+Every stop in `stops.txt` is tagged with a side before pathways are categorised:
+
+| Side | Predicate |
+|---|---|
+| `UNPAID` | `stop_id` starts with `ENT_` (station entrances) |
+| `UNPAID` | `stop_id` ends with `_UNPAID` (faregate unpaid-side nodes) |
+| `PAID` | `stop_id` starts with `PF_` (platforms) |
+| `PAID` | `stop_id` ends with `_PAID` (faregate paid-side nodes) |
+| `UNKNOWN` | Everything else (generic mezzanine/pivot nodes) |
+
+The `_PAID` / `_UNPAID` suffix convention is used by this feed for generic nodes (`location_type=3`) that sit immediately beside a fare barrier (e.g. `NODE_A01_C01_N_FG_PAID`). These nodes are not loaded as graph nodes but their zone side is known and used as anchors.
+
+### Side category → zone
+
+Each pathway is categorised from its `from_side` and `to_side`:
+
+| `side_category` | Condition | `zone` property | Labels applied |
+|---|---|---|---|
+| `exit_gate` | mode 7, PAID→UNPAID | — | — |
+| `cross_faregate` | mode 6, sides differ | — | — |
+| `pregate_internal` | both UNPAID | `'Unpaid'` | `:Unpaid` |
+| `postgate_internal` | both PAID | `'Paid'` | `:Paid` |
+| `pregate_internal` | one UNPAID, other UNKNOWN | `'Unpaid'` | `:Unpaid` |
+| `postgate_internal` | one PAID, other UNKNOWN | `'Paid'` | `:Paid` |
+| `mixed_non_gate` | both UNKNOWN, or contradictory | — | — |
+
+**One-anchor rule:** this feed has no direct PAID→PAID or UNPAID→UNPAID pathway hops — every paid-zone pathway connects a known anchor (a `_PAID` node or `PF_*` platform) to a generic intermediate node (`PLF_*` boarding areas, mezzanine `NODE_*` nodes). The one-anchor rule assigns zone when one side is known and the other is `UNKNOWN`, as long as no conflicting zone is present on the other side.
+
+Pathways where both endpoints are `UNKNOWN` (deep mezzanine hops with no direct zone anchor) remain unlabelled (`mixed_non_gate`) and carry no `:Paid`/`:Unpaid` label. Extending zone labels to stop-derived nodes (`:Platform`, `:StationEntrance`, etc.) is deferred until a downstream use case requires it.
 
 ---
 
@@ -138,7 +176,7 @@ Runs after all nodes and relationships are written. Failures 6–9 and 11 block 
 |---|---|
 | `__init__.py` | Orchestrator — runs extract → validate → transform → load in order |
 | `extract.py` | Pulls `stops`, `pathways`, `levels`, `feed_info` from the shared `gtfs_data` dict |
-| `transform.py` | Cleans stops and pathways, partitions nodes by type, classifies endpoints, builds directional link frames and pathway chain links |
+| `transform.py` | Cleans stops and pathways, partitions nodes by type, classifies zone anchors, categorises pathway zones, classifies endpoints, builds directional link frames and pathway chain links |
 | `load.py` | Writes all nodes and relationships to Neo4j using parameterised Cypher from `queries/physical/` |
 | `endpoint_classifier.py` | `EndpointClass` enum and `classify_endpoints()` — classifies each pathway endpoint as MATCHED, DEFERRED, GAP, or MISSING |
 
@@ -147,5 +185,5 @@ Cypher files live in `queries/physical/` (outside this package):
 | File | Purpose |
 |---|---|
 | `constraints.cypher` | Uniqueness constraints and indexes — applied once on first load |
-| `nodes.cypher` | `MERGE` statements for all node labels, plus Pathway multi-label migrations |
+| `nodes.cypher` | `MERGE` statements for all node labels, plus Pathway multi-label migrations (mode labels and `:Paid`/`:Unpaid` zone labels) |
 | `relationships.cypher` | `MERGE` statements for all `CONTAINS`, `LINKS` relationships |
