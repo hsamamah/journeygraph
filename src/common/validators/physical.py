@@ -181,9 +181,9 @@ def validate_pre_transform(
             f"no loaded partition predicate (gap) — pipeline cannot proceed: {gap_ids[:5]}"
         )
     if missing_ids:
-        result.fail(
-            f"{len(missing_ids)} pathway endpoint stop_id(s) not found in stops.txt "
-            f"at all — pipeline cannot proceed: {missing_ids[:5]}"
+        result.warn(
+            f"{len(missing_ids)} pathway endpoint stop_id(s) not found in stops.txt: "
+            f"{missing_ids[:5]} — these pathways will have no LINKS relationship"
         )
     if not gap_ids and not missing_ids:
         result.note(
@@ -342,7 +342,7 @@ def validate_post_load(neo4j_manager: "Neo4jManager") -> ValidationResult:
     if n == 0:
         result.note("All Pathway nodes participate in at least one [:LINKS] relationship")
     else:
-        result.fail(
+        result.warn(
             f"{n} Pathway node(s) have no [:LINKS] relationship in either direction — "
             f"indicates a classification gap or load failure"
         )

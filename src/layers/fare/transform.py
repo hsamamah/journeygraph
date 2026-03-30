@@ -231,6 +231,7 @@ def _transform_fare_leg_rules(
     applies_rows: list[dict] = []
     from_rows: list[dict] = []
     to_rows: list[dict] = []
+    unresolvable_area_ids: set[str] = set()
 
     for _, row in fare_leg_rules_raw.iterrows():
         leg_group_id = clean_str(str(row.get("leg_group_id", "")))
@@ -278,10 +279,22 @@ def _transform_fare_leg_rules(
             from_zone = stop_zone_map.get(from_area_id)
             to_zone = stop_zone_map.get(to_area_id) if to_area_id else None
 
+            if from_zone is None:
+                unresolvable_area_ids.add(from_area_id)
+            if to_area_id and to_zone is None:
+                unresolvable_area_ids.add(to_area_id)
+
             if from_zone and rule_id not in {r["rule_id"] for r in from_rows}:
                 from_rows.append({"rule_id": rule_id, "zone_id": from_zone})
             if to_zone and rule_id not in {r["rule_id"] for r in to_rows}:
                 to_rows.append({"rule_id": rule_id, "zone_id": to_zone})
+
+    if unresolvable_area_ids:
+        raise ValueError(
+            f"fare transform validation failed — {len(unresolvable_area_ids)} "
+            f"area_id(s) in fare_leg_rules could not be resolved to a zone: "
+            f"{sorted(unresolvable_area_ids)}"
+        )
 
     leg_rules = pd.DataFrame(list(leg_rules_seen.values()))
     applies_product = (
