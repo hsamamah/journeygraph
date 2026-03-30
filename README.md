@@ -154,9 +154,9 @@ def run(...):
 from src.common.config import WMATA_API_KEY
 ```
 
-2. **Neo4jManager** — instantiate inside `run()`, never at module level.
+2. **Neo4jManager** — instantiate inside `run()`, never at module level. Use `df_to_rows(df)` from `src.common.neo4j_tools` to convert DataFrames to parameter lists before passing to Cypher — it handles `NaN`/`NaT` → `None` conversion.
 
-3. **Validators** — add pre- and post-load checks in `src/common/validators/` following `fare_zones.py`.
+3. **Validators** — add pre- and post-load checks in `src/common/validators/` following `fare_zones.py`. Name them `validate_pre_transform` (called after extract, before transform) and `validate_post_load` (called after all Neo4j writes). Use `run_count_check(neo4j, cypher)` from `base.py` for post-load COUNT queries.
 
 4. **Cypher** — put `.cypher` files under `queries/<layer>/` and load them with the `load_query()` pattern from `queries/README.md`.
 
