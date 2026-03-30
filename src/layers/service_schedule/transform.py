@@ -191,14 +191,14 @@ def _classify_service(row: dict, service_id: str) -> str:
     if weekday_count == 0 and not sat and not sun:
         return "Holiday"
 
-    if weekday_count >= 4 and not sat and not sun:
+    if weekday_count >= 1 and not sat and not sun:
         return "Weekday"
     if sat and weekday_count == 0 and not sun:
         return "Saturday"
     if sun and weekday_count == 0 and not sat:
         return "Sunday"
 
-    # Mixed patterns (e.g. Mon-Sat) — default to Weekday with warning
+    # Truly mixed patterns (weekday + weekend overlap, e.g. Mon-Sat) — default to Weekday with warning
     log.warning(
         "service transform: service_id '%s' has mixed day flags "
         "(weekday=%d, sat=%d, sun=%d) — defaulting to 'Weekday'",
