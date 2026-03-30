@@ -392,7 +392,7 @@ def _mode_demo(
     print(f"\n{'═' * 56}")
     print("Demo summary:")
     all_passed = True
-    for (expected, output), (query, _) in zip(results, _DEMO_QUERIES, strict=True):
+    for (expected, output), (query, expected_domain) in zip(results, _DEMO_QUERIES, strict=True):
         if expected == "rejection":
             passed = output.rejected
         else:
@@ -423,7 +423,7 @@ def _mode_repl(
     while True:
         try:
             query = input("query> ").strip()
-        except EOFError, KeyboardInterrupt:
+        except (EOFError, KeyboardInterrupt):
             print("\nExiting.")
             break
 

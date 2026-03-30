@@ -384,14 +384,11 @@ class AnchorResolver:
         rows = self.db.query(
             """
             CALL db.index.fulltext.queryNodes("physical_station_name", $query) YIELD node, score
-            WITH node AS s, score
-            OPTIONAL MATCH (s)-[r]-()
-            WHERE type(r) IN ['SERVES', 'SCHEDULED_AT']
-            RETURN s.id      AS id,
-                   s.name    AS name,
+            RETURN node.id        AS id,
+                   node.name      AS name,
                    score,
-                   elementId(s) AS element_id,
-                   count(r)  AS degree
+                   elementId(node) AS element_id,
+                   size((node)-[:SERVES]-()) AS degree
             ORDER BY score DESC, degree DESC
             LIMIT $k
             """,
@@ -591,16 +588,17 @@ class AnchorResolver:
             )
             return []
 
+        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
         rows = self.db.query(
             """
-            MATCH (p:Pathway)-[:BELONGS_TO]->(s:Station)
+            CALL db.index.fulltext.queryNodes("physical_pathway_name", $name_query) YIELD node AS p, score
+            MATCH (p)-[:BELONGS_TO]->(s:Station)
             WHERE s.id STARTS WITH $station_code
-              AND toLower(p.name) CONTAINS toLower($unit_name)
             RETURN p.id AS id, elementId(p) AS element_id
-            ORDER BY p.id
+            ORDER BY score DESC
             LIMIT $k
             """,
-            {"station_code": station_code, "unit_name": name, "k": self._k},
+            {"name_query": f"*{clean_name}*", "station_code": station_code, "k": self._k},
         )
 
         if not rows:
