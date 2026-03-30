@@ -13,9 +13,29 @@ Usage:
 
 import logging
 from typing import Optional
+
+import pandas as pd
 from neo4j import GraphDatabase
 
 log = logging.getLogger(__name__)
+
+
+def df_to_rows(df: pd.DataFrame) -> list[dict]:
+    """Convert DataFrame to list of dicts, replacing NaN/NaT with None.
+
+    Handles non-scalar column values (lists, arrays) safely by passing them
+    through unchanged rather than raising on pd.isna().
+    """
+    def _to_none(v: object) -> object:
+        try:
+            return None if pd.isna(v) else v
+        except (TypeError, ValueError):
+            return v  # non-scalar (list, array) — pass through unchanged
+
+    return [
+        {k: _to_none(v) for k, v in row.items()}
+        for row in df.to_dict(orient="records")
+    ]
 
 
 class Neo4jManager:

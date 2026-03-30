@@ -27,7 +27,7 @@ import re
 import pandas as pd
 
 from src.common.logger import get_logger
-from src.common.utils import clean_str, safe_float
+from src.common.utils import clean_str
 
 log = get_logger(__name__)
 
@@ -126,13 +126,12 @@ def _build_product_amount_map(fare_products_raw: pd.DataFrame) -> dict[str, floa
     """
     if "amount" not in fare_products_raw.columns:
         return {}
-    result: dict[str, float] = {}
-    for _, row in fare_products_raw.iterrows():
-        pid = clean_str(str(row.get("fare_product_id", "")))
-        amt = safe_float(row.get("amount"))
-        if pid and amt is not None:
-            result[pid] = amt
-    return result
+    df = fare_products_raw[["fare_product_id", "amount"]].copy()
+    df["fare_product_id"] = df["fare_product_id"].astype(str).str.strip()
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    df = df[df["fare_product_id"].notna() & (df["fare_product_id"] != "") & (df["fare_product_id"] != "nan")]
+    df = df.dropna(subset=["amount"])
+    return df.set_index("fare_product_id")["amount"].to_dict()
 
 
 # ── Transform functions ───────────────────────────────────────────────────────
@@ -233,61 +232,89 @@ def _transform_fare_leg_rules(
     to_rows: list[dict] = []
     unresolvable_area_ids: set[str] = set()
 
-    for _, row in fare_leg_rules_raw.iterrows():
-        leg_group_id = clean_str(str(row.get("leg_group_id", "")))
-        network_id = clean_str(str(row.get("network_id", "")))
-        fare_product_id = clean_str(str(row.get("fare_product_id", "")))
-        timeframe = clean_str(str(row.get("from_timeframe_group_id", "")))
+    # Vectorised string normalisation — replaces per-row clean_str calls
+    def _strip_col(col: str, src: str | None = None) -> pd.Series:
+        raw = fare_leg_rules_raw.get(src or col, pd.Series(dtype=str))
+        cleaned = raw.astype(str).str.strip()
+        return cleaned.where(~cleaned.isin(["", "nan", "None"]), other=None)
 
-        raw_from = row.get("from_area_id")
-        raw_to = row.get("to_area_id")
-        from_area_id = (
-            "" if raw_from is None or pd.isna(raw_from) else clean_str(str(raw_from))
+    df = fare_leg_rules_raw.copy()
+    df["_leg_group_id"]    = _strip_col("leg_group_id")
+    df["_network_id"]      = _strip_col("network_id")
+    df["_fare_product_id"] = _strip_col("fare_product_id")
+    df["_timeframe"]       = _strip_col("from_timeframe_group_id")
+    df["_from_area_id"]    = _strip_col("from_area_id").fillna("")
+    df["_to_area_id"]      = _strip_col("to_area_id").fillna("")
+
+    df = df[df["_leg_group_id"].notna()].copy()
+
+    # Composite primary key — OD pair identity
+    df["_rule_id"] = (
+        df["_leg_group_id"] + "__"
+        + df["_from_area_id"].where(df["_from_area_id"] != "", "NULL") + "__"
+        + df["_to_area_id"].where(df["_to_area_id"] != "", "NULL")
+    )
+
+    # leg_rules — first occurrence per rule_id preserves network_id semantics
+    leg_rules_df = (
+        df.drop_duplicates(subset=["_rule_id"], keep="first")
+        [["_rule_id", "_leg_group_id", "_network_id"]]
+        .rename(columns={"_rule_id": "rule_id", "_leg_group_id": "leg_group_id", "_network_id": "network_id"})
+        .reset_index(drop=True)
+    )
+    for _, r in leg_rules_df.iterrows():
+        leg_rules_seen[r["rule_id"]] = r.to_dict()
+
+    # APPLIES_PRODUCT — map logical product per unique fare_product_id, then join
+    unique_pids = df["_fare_product_id"].dropna().unique()
+    pid_mapping = {pid: _logical_product(pid) for pid in unique_pids}
+    df["_mapping"] = df["_fare_product_id"].map(pid_mapping)
+    applies_df = df[df["_mapping"].notna()].copy()
+    if not applies_df.empty:
+        applies_df["_logical_id"] = applies_df["_mapping"].map(lambda m: m[0])
+        applies_df["_amount"] = applies_df["_fare_product_id"].map(
+            lambda pid: _parse_amount(pid, product_amount_map)
         )
-        to_area_id = "" if raw_to is None or pd.isna(raw_to) else clean_str(str(raw_to))
+        applies_rows = applies_df[["_rule_id", "_logical_id", "_timeframe", "_amount"]].rename(
+            columns={"_rule_id": "rule_id", "_logical_id": "fare_product_id", "_timeframe": "timeframe", "_amount": "amount"}
+        ).assign(
+            timeframe=lambda d: d["timeframe"].fillna("NULL"),
+            currency="USD",
+        ).to_dict(orient="records")
 
-        if not leg_group_id:
-            continue
+    # FROM_AREA / TO_AREA — rail only, one row per rule_id
+    rail_df = df[
+        df["_network_id"].isin(RAIL_NETWORKS)
+        & (df["_from_area_id"] != "")
+        & (df["_from_area_id"] != "nan")
+    ].copy()
 
-        # Composite primary key — OD pair identity
-        rule_id = f"{leg_group_id}__{from_area_id or 'NULL'}__{to_area_id or 'NULL'}"
+    if not rail_df.empty:
+        rail_df["_from_zone"] = rail_df["_from_area_id"].map(stop_zone_map)
+        rail_df["_to_zone"]   = rail_df["_to_area_id"].map(stop_zone_map)
 
-        if rule_id not in leg_rules_seen:
-            leg_rules_seen[rule_id] = {
-                "rule_id": rule_id,
-                "leg_group_id": leg_group_id,
-                "network_id": network_id,
-            }
+        unresolvable_area_ids = (
+            set(rail_df.loc[rail_df["_from_zone"].isna(), "_from_area_id"])
+            | set(rail_df.loc[
+                (rail_df["_to_area_id"] != "") & rail_df["_to_zone"].isna(),
+                "_to_area_id",
+            ])
+        )
 
-        # APPLIES_PRODUCT — one row per (rule_id, timeframe)
-        mapping = _logical_product(fare_product_id)
-        if mapping:
-            logical_id, _ = mapping
-            amount = _parse_amount(fare_product_id, product_amount_map)
-            applies_rows.append(
-                {
-                    "rule_id": rule_id,
-                    "fare_product_id": logical_id,
-                    "timeframe": timeframe or "NULL",
-                    "amount": amount,
-                    "currency": "USD",
-                }
-            )
-
-        # FROM_AREA / TO_AREA — rail only, one row per rule_id
-        if network_id in RAIL_NETWORKS and from_area_id and from_area_id != "nan":
-            from_zone = stop_zone_map.get(from_area_id)
-            to_zone = stop_zone_map.get(to_area_id) if to_area_id else None
-
-            if from_zone is None:
-                unresolvable_area_ids.add(from_area_id)
-            if to_area_id and to_zone is None:
-                unresolvable_area_ids.add(to_area_id)
-
-            if from_zone and rule_id not in {r["rule_id"] for r in from_rows}:
-                from_rows.append({"rule_id": rule_id, "zone_id": from_zone})
-            if to_zone and rule_id not in {r["rule_id"] for r in to_rows}:
-                to_rows.append({"rule_id": rule_id, "zone_id": to_zone})
+        from_rows = (
+            rail_df[rail_df["_from_zone"].notna()]
+            .drop_duplicates(subset=["_rule_id"], keep="first")
+            [["_rule_id", "_from_zone"]]
+            .rename(columns={"_rule_id": "rule_id", "_from_zone": "zone_id"})
+            .to_dict(orient="records")
+        )
+        to_rows = (
+            rail_df[rail_df["_to_zone"].notna()]
+            .drop_duplicates(subset=["_rule_id"], keep="first")
+            [["_rule_id", "_to_zone"]]
+            .rename(columns={"_rule_id": "rule_id", "_to_zone": "zone_id"})
+            .to_dict(orient="records")
+        )
 
     if unresolvable_area_ids:
         raise ValueError(

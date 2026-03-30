@@ -368,13 +368,10 @@ def _resolve_calendar(
         if effective_start > effective_end:
             service_dates[sid] = dates
             continue
-        current = effective_start
-        while current <= effective_end:
-            day_col = DAY_COLS[current.weekday()]
-            if int(row.get(day_col, 0) or 0) == 1:
-                dates.add(current.strftime("%Y%m%d"))
-            current += timedelta(days=1)
-        service_dates[sid] = dates
+        date_range = pd.date_range(start=effective_start, end=effective_end, freq="D")
+        day_flags = np.array([int(row.get(DAY_COLS[i], 0) or 0) for i in range(7)])
+        active_mask = day_flags[date_range.weekday] == 1
+        service_dates[sid] = set(date_range[active_mask].strftime("%Y%m%d"))
 
     # Step 2: Apply calendar_dates exceptions
     if calendar_dates_raw is not None and not calendar_dates_raw.empty:
@@ -419,17 +416,12 @@ def _transform_dates(active_on: pd.DataFrame) -> pd.DataFrame:
     if active_on.empty:
         return pd.DataFrame(columns=["date", "day_of_week"])
 
-    unique_dates = sorted(active_on["date"].unique())
-    rows = []
-    for d_str in unique_dates:
-        d = _parse_gtfs_date(d_str)
-        rows.append(
-            {
-                "date": d_str,
-                "day_of_week": _day_of_week_name(d) if d else "Unknown",
-            }
-        )
-    return pd.DataFrame(rows)
+    unique_dates = pd.Series(sorted(active_on["date"].unique()))
+    parsed = pd.to_datetime(unique_dates, format="%Y%m%d", errors="coerce")
+    return pd.DataFrame({
+        "date": unique_dates.values,
+        "day_of_week": parsed.dt.day_name().where(parsed.notna(), "Unknown"),
+    })
 
 
 def _normalize_gtfs_time_vec(series: pd.Series) -> pd.Series:
@@ -453,7 +445,23 @@ def _normalize_gtfs_time_vec(series: pd.Series) -> pd.Series:
     if not valid_mask.any():
         return pd.Series(result, index=series.index)
 
-    # to_numpy(dtype="U8") pads to exactly 8 chars — guaranteed by GTFS format
+    # Validate that all times are exactly 8 chars (HH:MM:SS zero-padded).
+    # GTFS does not guarantee zero-padding for sub-10-hour values (e.g. "9:30:00"
+    # is 7 chars). Non-padded values would corrupt the fixed-offset bit arithmetic,
+    # so they are excluded and set to NaN with a warning.
+    valid_series = series[valid_mask]
+    length_mask = valid_series.str.len() == 8
+    if not length_mask.all():
+        bad = valid_series[~length_mask].unique().tolist()
+        log.warning(
+            "service transform: %d stop_time value(s) are not 8 chars and will be "
+            "set to NaN — check for non-zero-padded hours (e.g. '9:30:00'): %s",
+            (~length_mask).sum(),
+            bad[:10],
+        )
+        valid_mask = valid_mask.copy()
+        valid_mask[valid_series[~length_mask].index] = False
+
     sv = series[valid_mask].to_numpy(dtype="U8")
     flat = sv.view(np.int32)  # each U1 char → int32 value
 

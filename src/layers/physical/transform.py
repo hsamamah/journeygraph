@@ -6,6 +6,7 @@ Converts raw GTFS DataFrames into clean, Neo4j-ready DataFrames for physical inf
 Includes stop, pathway, and level cleaning, tagging, and partitioning.
 """
 
+import numpy as np
 import pandas as pd
 
 from src.common.logger import get_logger
@@ -102,12 +103,16 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     feed_info_df = raw["feed_info"].copy()
 
     # Clean stop_id and stop_desc columns
-    stops_df["stop_id"] = stops_df["stop_id"].apply(clean_str)
-    stops_df["stop_desc"] = stops_df["stop_desc"].apply(clean_str)
+    def _clean_col(s: pd.Series) -> pd.Series:
+        cleaned = s.astype(str).str.strip()
+        return cleaned.where(~cleaned.isin(["", "nan", "None"]), other=None)
+
+    stops_df["stop_id"] = _clean_col(stops_df["stop_id"])
+    stops_df["stop_desc"] = _clean_col(stops_df["stop_desc"])
     if "parent_station" in stops_df:
-        stops_df["parent_station"] = stops_df["parent_station"].apply(clean_str)
+        stops_df["parent_station"] = _clean_col(stops_df["parent_station"])
     if "level_id" in stops_df:
-        stops_df["level_id"] = stops_df["level_id"].apply(clean_str)
+        stops_df["level_id"] = _clean_col(stops_df["level_id"])
 
     # Add level description
     stops_df["level_description"] = stops_df["level_id"].apply(get_level_description)
@@ -197,14 +202,10 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     faregate_paid_ids = frozenset(
         stops_df[stops_df["id"].str.endswith("_PAID", na=False)]["id"]
     )
-    node_side = {}
-    for stop in stops_df["id"]:
-        if stop in entrance_ids or stop in faregate_unpaid_ids:
-            node_side[stop] = "UNPAID"
-        elif stop in platform_ids or stop in faregate_paid_ids:
-            node_side[stop] = "PAID"
-        else:
-            node_side[stop] = "UNKNOWN"
+    ids = stops_df["id"]
+    unpaid_mask = ids.isin(entrance_ids) | ids.isin(faregate_unpaid_ids)
+    paid_mask   = ids.isin(platform_ids) | ids.isin(faregate_paid_ids)
+    node_side = dict(zip(ids, np.select([unpaid_mask, paid_mask], ["UNPAID", "PAID"], default="UNKNOWN")))
 
     pathways_df["from_side"] = pathways_df["from_stop_id"].map(node_side)
     pathways_df["to_side"] = pathways_df["to_stop_id"].map(node_side)
@@ -219,25 +220,21 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     # if one endpoint is UNPAID and neither is PAID → pregate_internal (Unpaid).
     # Pathways where both endpoints are UNKNOWN (deep mezzanine hops) cannot be
     # zone-classified without graph traversal and remain mixed_non_gate for now.
-    def categorize(row):
-        mode = int(row["mode"])
-        fs, ts = row["from_side"], row["to_side"]
-        if mode == 7 and fs == "PAID" and ts == "UNPAID":
-            return "exit_gate"
-        if mode == 6 and fs != ts:
-            return "cross_faregate"
-        if fs == "UNPAID" and ts == "UNPAID":
-            return "pregate_internal"
-        if fs == "PAID" and ts == "PAID":
-            return "postgate_internal"
-        # One-anchor: one known side, the other a generic intermediate node
-        if ("PAID" in (fs, ts)) and "UNPAID" not in (fs, ts):
-            return "postgate_internal"
-        if ("UNPAID" in (fs, ts)) and "PAID" not in (fs, ts):
-            return "pregate_internal"
-        return "mixed_non_gate"
-
-    pathways_df["side_category"] = pathways_df.apply(categorize, axis=1)
+    mode = pathways_df["mode"].apply(safe_int).fillna(-1).astype(int)
+    fs = pathways_df["from_side"]
+    ts = pathways_df["to_side"]
+    pathways_df["side_category"] = np.select(
+        [
+            (mode == 7) & (fs == "PAID") & (ts == "UNPAID"),
+            (mode == 6) & (fs != ts),
+            (fs == "UNPAID") & (ts == "UNPAID"),
+            (fs == "PAID") & (ts == "PAID"),
+            fs.isin(["PAID"]) & ~ts.isin(["UNPAID"]),
+            ts.isin(["PAID"]) & ~fs.isin(["UNPAID"]),
+        ],
+        ["exit_gate", "cross_faregate", "pregate_internal", "postgate_internal", "postgate_internal", "pregate_internal"],
+        default="mixed_non_gate",
+    )
 
     _zone_map = {"pregate_internal": "Unpaid", "postgate_internal": "Paid"}
     pathways_df["zone"] = pathways_df["side_category"].map(_zone_map)
@@ -245,22 +242,14 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     # Add stop descriptions for from_stop_id and to_stop_id
     from_desc_map = stops_df.set_index("id")["desc"]
     to_desc_map = stops_df.set_index("id")["desc"]
-    pathways_df["from_stop_desc"] = (
-        pathways_df["from_stop_id"].apply(clean_str).map(from_desc_map)
-    )
-    pathways_df["to_stop_desc"] = (
-        pathways_df["to_stop_id"].apply(clean_str).map(to_desc_map)
-    )
+    pathways_df["from_stop_desc"] = pathways_df["from_stop_id"].str.strip().map(from_desc_map)
+    pathways_df["to_stop_desc"]   = pathways_df["to_stop_id"].str.strip().map(to_desc_map)
 
     # Add level info for from/to stops
     from_level_map = stops_df.set_index("id")["level_description"]
     to_level_map = stops_df.set_index("id")["level_description"]
-    pathways_df["from_level_description"] = (
-        pathways_df["from_stop_id"].apply(clean_str).map(from_level_map)
-    )
-    pathways_df["to_level_description"] = (
-        pathways_df["to_stop_id"].apply(clean_str).map(to_level_map)
-    )
+    pathways_df["from_level_description"] = pathways_df["from_stop_id"].str.strip().map(from_level_map)
+    pathways_df["to_level_description"]   = pathways_df["to_stop_id"].str.strip().map(to_level_map)
 
     # ── Endpoint classification ───────────────────────────────────────────────
     pathways_df["is_bidirectional"] = (
