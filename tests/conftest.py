@@ -250,6 +250,92 @@ def service_gtfs_data(
     }
 
 
+# ── Physical layer fixtures ───────────────────────────────────────────────────
+
+
+@pytest.fixture
+def physical_stops_df() -> pd.DataFrame:
+    """
+    Minimal stops.txt for physical validator tests.
+    Covers: Station, Platform (PF_), StationEntrance (ENT_), FareGate (_FG_), BusStop.
+    """
+    return pd.DataFrame([
+        # Stations
+        dict(stop_id="STN_A01", location_type=1, parent_station="",       zone_id="10"),
+        dict(stop_id="STN_B01", location_type=1, parent_station="",       zone_id="5"),
+        # Platforms
+        dict(stop_id="PF_A01_1", location_type=0, parent_station="STN_A01", zone_id=""),
+        dict(stop_id="PF_A01_2", location_type=0, parent_station="STN_A01", zone_id=""),
+        dict(stop_id="PF_B01_1", location_type=0, parent_station="STN_B01", zone_id=""),
+        # Entrances
+        dict(stop_id="ENT_A01_N", location_type=2, parent_station="STN_A01", zone_id=""),
+        # FareGates
+        dict(stop_id="NODE_A01_FG_PAID",   location_type=3, parent_station="STN_A01", zone_id="10"),
+        dict(stop_id="NODE_A01_FG_UNPAID", location_type=3, parent_station="STN_A01", zone_id="10"),
+        # BusStop (numeric id, no parent)
+        dict(stop_id="10001", location_type=0, parent_station="", zone_id=""),
+    ])
+
+
+@pytest.fixture
+def physical_pathways_df() -> pd.DataFrame:
+    """Minimal pathways.txt — connects entrance → faregate → platform."""
+    return pd.DataFrame([
+        dict(pathway_id="PW_001", from_stop_id="ENT_A01_N",        to_stop_id="NODE_A01_FG_UNPAID", pathway_mode=1, is_bidirectional=1),
+        dict(pathway_id="PW_002", from_stop_id="NODE_A01_FG_UNPAID", to_stop_id="NODE_A01_FG_PAID",  pathway_mode=6, is_bidirectional=0),
+        dict(pathway_id="PW_003", from_stop_id="NODE_A01_FG_PAID",   to_stop_id="PF_A01_1",           pathway_mode=1, is_bidirectional=1),
+        dict(pathway_id="PW_004", from_stop_id="PF_A01_1",           to_stop_id="PF_A01_2",           pathway_mode=5, is_bidirectional=1),
+    ])
+
+
+# ── Mock Neo4j manager ────────────────────────────────────────────────────────
+
+
+class MockSession:
+    """Minimal session mock — returns a fixed count for every query."""
+
+    def __init__(self, count: int = 0):
+        self._count = count
+
+    def run(self, cypher, **kwargs):
+        return self
+
+    def single(self):
+        return {"n": self._count}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+
+class MockNeo4j:
+    """Minimal Neo4jManager mock for post-load validator tests."""
+
+    def __init__(self, count: int = 0):
+        self._count = count
+
+    @property
+    def driver(self):
+        return self
+
+    def session(self):
+        return MockSession(self._count)
+
+
+@pytest.fixture
+def neo4j_clean():
+    """Mock Neo4j that returns 0 for every count check (all passing)."""
+    return MockNeo4j(count=0)
+
+
+@pytest.fixture
+def neo4j_with_duplicates():
+    """Mock Neo4j that returns 1 for every count check (triggers all duplicate checks)."""
+    return MockNeo4j(count=1)
+
+
 # ── Real GTFS fixtures (skip if files not present) ────────────────────────────
 
 def _gtfs_path(name: str) -> Path:

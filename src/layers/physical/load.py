@@ -3,7 +3,7 @@
 Physical Infrastructure Layer — Load
 
 Writes all physical nodes and relationships to Neo4j in dependency order,
-then runs post-load validation.
+then runs post-load validation (validate_post_load from validators/physical.py).
 
 Load order (respects foreign key dependencies):
   1. Constraints        (idempotent — safe to re-run)
@@ -35,6 +35,7 @@ import pandas as pd
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
+from src.common.validators.physical import validate_post_load
 
 log = get_logger(__name__)
 
@@ -182,7 +183,7 @@ def _load_station_contains_platform(neo4j: Neo4jManager, stops: pd.DataFrame) ->
     neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(stops)})
 
 
-def _load_pathway_links(neo4j: Neo4jManager, links: dict[pd.DataFrame]) -> None:
+def _load_pathway_links(neo4j: Neo4jManager, links: dict[str, pd.DataFrame]) -> None:
     """
     Wire Pathway -[:LINKS]-> (StationEntrance | Platform | Station | FareGate).
 
@@ -271,5 +272,15 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     _load_station_contains_entrance(neo4j, station_contains_entrance)
     _load_station_contains_platform(neo4j, station_contains_platform)
     _load_pathway_links(neo4j, links)
+
+    # ── Post-load validation ───────────────────────────────────────────────────
+    log.info("physical load: running post-load validation")
+    validation = validate_post_load(neo4j)
+    log.info("physical load: post-load validation result:\n%s", validation.summary())
+    if not validation.passed:
+        raise ValueError(
+            f"Physical layer post-load validation failed — aborting pipeline:\n"
+            f"{validation.summary()}"
+        )
 
     log.info("physical load: complete")

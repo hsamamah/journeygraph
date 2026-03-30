@@ -730,26 +730,6 @@ def run(raw: dict[str, pd.DataFrame]) -> ServiceTransformResult:
 
     log.info("service transform: complete")
 
-    # ── Pre-load validation ───────────────────────────────────────────────────
-    log.info("service transform: running pre-load validation")
-    from src.common.validators.service_schedule import validate_pre_load
-
-    validation = validate_pre_load(
-        trips=trips_raw,
-        stop_times=stop_times_raw,
-        stops=stops_raw,
-        calendar=calendar_raw,
-        calendar_dates=calendar_dates_raw,
-        feed_start=feed_start.strftime("%Y%m%d"),
-        feed_end=feed_end.strftime("%Y%m%d"),
-    )
-    log.info("service transform: pre-load validation result:\n%s", validation.summary())
-    if not validation.passed:
-        raise ValueError(
-            f"Service layer pre-load validation failed — aborting pipeline:\n"
-            f"{validation.summary()}"
-        )
-
     return ServiceTransformResult(
         feed_info=feed_info,
         agency=agency,

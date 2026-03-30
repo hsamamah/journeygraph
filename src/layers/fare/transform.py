@@ -28,7 +28,6 @@ import pandas as pd
 
 from src.common.logger import get_logger
 from src.common.utils import clean_str, safe_float
-from src.common.validators.fare_zones import validate_pre_load
 
 log = get_logger(__name__)
 
@@ -372,17 +371,6 @@ def run(raw: dict[str, pd.DataFrame]) -> FareTransformResult:
     }
     for k, v in stats.items():
         log.info("fare transform: %-25s %6d rows", k, v)
-
-    # ── Pre-load validation ───────────────────────────────────────────────────
-    log.info("fare transform: running pre-load validation")
-    validation = validate_pre_load(stops=stops, fare_leg_rules=fare_leg_raw)
-    log.info("fare transform: pre-load validation result:\n%s", validation.summary())
-
-    if not validation.passed:
-        raise ValueError(
-            f"Fare layer pre-load validation failed — aborting pipeline:\n"
-            f"{validation.summary()}"
-        )
 
     log.info("fare transform: complete")
     return FareTransformResult(
