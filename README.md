@@ -5,7 +5,7 @@ A Neo4j knowledge graph of the WMATA Washington DC Metro transit system, built o
 - **ETL pipeline** (`src/pipeline.py`) — ingests GTFS static and WMATA API data into Neo4j across five domain layers
 - **LLM query pipeline** (`src/llm/`) — natural language querying over the graph via a multi-agent pipeline
 
-> **Current state:** The Fare, Service & Schedule, Interruption, and Accessibility layers are implemented. Physical Infrastructure is a stub. The LLM pipeline has the Planner stage implemented — see [`src/llm/README.md`](src/llm/README.md) for details.
+> **Current state:** All five ETL layers are implemented. The LLM pipeline has the Planner (L3), Text2Cypher (L4), and Subgraph Context Builder (L5) stages implemented — see [`src/llm/README.md`](src/llm/README.md) for details.
 
 ---
 
@@ -64,12 +64,6 @@ Download the WMATA GTFS feed before running any layers. It lands in `data/gtfs/`
 # Download only — does not touch Neo4j
 uv run python -m src.pipeline --download-only
 
-# Download then run all layers
-uv run python -m src.pipeline --download
-
-# Download then run specific layers
-uv run python -m src.pipeline --download --layers fare
-
 # Force re-download when the feed has been updated
 uv run python -m src.pipeline --force-download
 ```
@@ -105,12 +99,12 @@ src/
 ├── common/         # Shared utilities (logger, Neo4j driver, config, paths, validators)
 ├── ingest/         # GTFS downloader + WMATA API client
 ├── layers/
-│   ├── physical/         # Stops, pathways, levels              [stub]
+│   ├── physical/         # Stops, pathways, levels              [implemented]
 │   ├── service_schedule/ # Routes, trips, calendar              [implemented]
 │   ├── fare/             # Fare products, zones, rules, media   [implemented]
 │   ├── accessibility/    # Elevator/escalator outage events     [implemented]
 │   └── interruption/     # Real-time service disruptions        [implemented]
-├── llm/            # LLM query pipeline — see src/llm/README.md [Planner implemented]
+├── llm/            # LLM query pipeline — see src/llm/README.md
 └── pipeline.py     # ETL entry point — download + layer orchestration
 data/
 ├── raw/            # Downloaded zips (git-ignored)

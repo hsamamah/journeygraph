@@ -14,6 +14,8 @@ Usage:
     alerts  = client.get_gtfs_rt_alerts()
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from google.transit import gtfs_realtime_pb2
 import requests
 
@@ -37,6 +39,12 @@ class WMATAClient:
         config = get_config()
         self._session = requests.Session()
         self._session.headers.update({"api_key": api_key or config.wmata_api_key})
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self._session.close()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -115,25 +123,23 @@ class WMATAClient:
         return feed
 
     def get_all_trip_updates(self) -> list[tuple[gtfs_realtime_pb2.FeedMessage, str]]:
-        """Fetch both rail and bus trip update feeds. Returns [(feed, source), ...]."""
-        results = []
-        for source in ("rail", "bus"):
-            try:
-                feed = self.get_gtfs_rt_trip_updates(source=source)
-                results.append((feed, f"gtfs_rt_{source}"))
-            except Exception as exc:
-                logger.warning(f"Failed to fetch {source} trip updates: {exc}")
-        return results
+        """Fetch both rail and bus trip update feeds concurrently. Returns [(feed, source), ...]."""
+        return self._fetch_all(self.get_gtfs_rt_trip_updates, "trip updates")
 
     def get_all_alerts(self) -> list[tuple[gtfs_realtime_pb2.FeedMessage, str]]:
-        """Fetch both rail and bus alert feeds. Returns [(feed, source), ...]."""
+        """Fetch both rail and bus alert feeds concurrently. Returns [(feed, source), ...]."""
+        return self._fetch_all(self.get_gtfs_rt_alerts, "alerts")
+
+    def _fetch_all(self, fetch_fn, label: str) -> list[tuple[gtfs_realtime_pb2.FeedMessage, str]]:
         results = []
-        for source in ("rail", "bus"):
-            try:
-                feed = self.get_gtfs_rt_alerts(source=source)
-                results.append((feed, f"gtfs_rt_{source}"))
-            except Exception as exc:
-                logger.warning(f"Failed to fetch {source} alerts: {exc}")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = {pool.submit(fetch_fn, source=s): s for s in ("rail", "bus")}
+            for fut in as_completed(futures):
+                source = futures[fut]
+                try:
+                    results.append((fut.result(), f"gtfs_rt_{source}"))
+                except Exception as exc:
+                    logger.warning(f"Failed to fetch {source} {label}: {exc}")
         return results
 
     def get_gtfs_rt_vehicle_positions(self) -> gtfs_realtime_pb2.FeedMessage:

@@ -13,10 +13,6 @@ Usage:
     python -m src.pipeline --layers physical fare
     python -m src.pipeline --layers fare accessibility
 
-    # Download GTFS feed first, then run layers
-    python -m src.pipeline --download
-    python -m src.pipeline --download --layers fare
-
     # Force re-download even if feed is already cached
     python -m src.pipeline --force-download
 
@@ -43,6 +39,10 @@ log = get_logger(__name__)
 # Lazy import registry — each layer module is imported only when that layer
 # is actually executed. This means unimplemented layers do not cause import
 # errors at startup (e.g. when running --download-only or --layers fare).
+_GTFS_LAYERS: frozenset[Layer] = frozenset({
+    Layer.PHYSICAL, Layer.SERVICE_SCHEDULE, Layer.FARE, Layer.INTERRUPTION
+})
+
 _LAYER_MODULES: dict[Layer, str] = {
     Layer.PHYSICAL: "src.layers.physical",
     Layer.SERVICE_SCHEDULE: "src.layers.service_schedule",
@@ -91,14 +91,6 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--download",
-        action="store_true",
-        help=(
-            "Download the GTFS feed before running layers. "
-            "Skipped if data/gtfs/ already has files unless --force-download is set."
-        ),
-    )
-    parser.add_argument(
         "--force-download",
         action="store_true",
         help="Re-download and re-extract the GTFS feed even if already cached.",
@@ -117,16 +109,6 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
-
-
-def _execution_plan(
-    requested: list[Layer],
-    *,
-    with_deps: bool = False,
-    cascade: bool = False,
-) -> list[Layer]:
-    """Resolve requested layers to an ordered execution plan."""
-    return resolve_layers(requested, with_deps=with_deps, cascade=cascade)
 
 
 def _print_plan(
@@ -183,8 +165,8 @@ def _execute_layer(
     if layer in (Layer.ACCESSIBILITY, Layer.INTERRUPTION):
         from src.ingest.api_client import WMATAClient
 
-        api_client = WMATAClient(api_key=config.wmata_api_key)
-        runner(gtfs_data, neo4j, api_client)
+        with WMATAClient(api_key=config.wmata_api_key) as api_client:
+            runner(gtfs_data, neo4j, api_client)
     else:
         runner(gtfs_data, neo4j)
 
@@ -193,42 +175,45 @@ def _run_pipeline(
     plan: list[Layer], dry_run: bool = False, force_download: bool = False
 ) -> None:
     config = get_config()
-    neo4j = Neo4jManager(
-        uri=config.neo4j_uri,
-        user=config.neo4j_user,
-        password=config.neo4j_password,
-    )
 
-    log.info("Loading GTFS feed")
-    gtfs_data = load(
-        force_download=force_download,
-        force_extract=force_download,
-    )
-    log.info("GTFS load complete — %d files available", len(gtfs_data))
+    if any(layer in _GTFS_LAYERS for layer in plan):
+        log.info("Loading GTFS feed")
+        gtfs_data = load(
+            force_download=force_download,
+            force_extract=force_download,
+        )
+        log.info("GTFS load complete — %d files available", len(gtfs_data))
+    else:
+        gtfs_data = {}
 
     results: dict[Layer, str] = {}
     pipeline_start = time.monotonic()
 
-    for layer in plan:
-        if dry_run:
-            log.info("[dry-run] would execute: %s", layer.value)
-            continue
+    with Neo4jManager(
+        uri=config.neo4j_uri,
+        user=config.neo4j_user,
+        password=config.neo4j_password,
+    ) as neo4j:
+        for layer in plan:
+            if dry_run:
+                log.info("[dry-run] would execute: %s", layer.value)
+                continue
 
-        log.info("─── Starting layer: %s ───", layer.value)
-        layer_start = time.monotonic()
+            log.info("─── Starting layer: %s ───", layer.value)
+            layer_start = time.monotonic()
 
-        try:
-            _execute_layer(layer, gtfs_data, neo4j, config)
-            elapsed = time.monotonic() - layer_start
-            results[layer] = f"✅  {elapsed:.1f}s"
-            log.info("─── Completed layer: %s (%.1fs) ───", layer.value, elapsed)
+            try:
+                _execute_layer(layer, gtfs_data, neo4j, config)
+                elapsed = time.monotonic() - layer_start
+                results[layer] = f"✅  {elapsed:.1f}s"
+                log.info("─── Completed layer: %s (%.1fs) ───", layer.value, elapsed)
 
-        except Exception as exc:
-            elapsed = time.monotonic() - layer_start
-            results[layer] = f"❌  {elapsed:.1f}s — {exc}"
-            log.exception("─── FAILED layer: %s (%.1fs) ───", layer.value, elapsed)
-            _log_summary(results, plan, time.monotonic() - pipeline_start)
-            sys.exit(1)
+            except Exception as exc:
+                elapsed = time.monotonic() - layer_start
+                results[layer] = f"❌  {elapsed:.1f}s — {exc}"
+                log.exception("─── FAILED layer: %s (%.1fs) ───", layer.value, elapsed)
+                _log_summary(results, plan, time.monotonic() - pipeline_start)
+                sys.exit(1)
 
     _log_summary(results, plan, time.monotonic() - pipeline_start)
 
@@ -266,7 +251,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         log.info("--download-only complete — %d files available", len(data))
         return
 
-    plan = _execution_plan(requested, with_deps=args.with_deps, cascade=args.cascade)
+    plan = resolve_layers(requested, with_deps=args.with_deps, cascade=args.cascade)
     _print_plan(plan, requested, with_deps=args.with_deps, cascade=args.cascade)
 
     if args.dry_run:

@@ -100,10 +100,12 @@ def test_cascade_physical_includes_fare_and_accessibility():
     assert Layer.ACCESSIBILITY in result
 
 
-def test_cascade_leaf_layer_no_change():
-    """FARE has no downstream dependents, cascade adds nothing."""
+def test_cascade_fare_includes_accessibility_and_interruption():
+    """FARE → ACCESSIBILITY and INTERRUPTION both depend on it."""
     result = resolve_layers([Layer.FARE], cascade=True)
-    assert result == [Layer.FARE]
+    assert Layer.FARE in result
+    assert Layer.ACCESSIBILITY in result
+    assert Layer.INTERRUPTION in result
 
 
 # ── combined with_deps + cascade ─────────────────────────────────────────────
