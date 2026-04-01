@@ -2,11 +2,13 @@
 """
 Fare zone integrity checks, run in two phases:
 
-  validate_pre_load  — checks raw GTFS DataFrames before any Neo4j writes
-  validate_post_load — checks the graph after all fare nodes and relationships
-                       have been committed
+  validate_pre_transform — checks raw GTFS DataFrames before any transformation
+                           runs. Called in fare/__init__.py after extract,
+                           before transform.
+  validate_post_load     — checks the graph after all fare nodes and
+                           relationships have been committed.
 
-Pre-load checks:
+Pre-transform checks:
   1.  All area_ids in fare_leg_rules resolve to a known zone_id in stops
   1b. All zone-priced rail FareLegRule rows have a non-null from_area_id
       (free-fare rules are exempt — leg_metrorail_shuttle has null areas by design)
@@ -31,10 +33,14 @@ Known data characteristics (non-blocking warnings):
 from __future__ import annotations
 
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from src.common.validators.base import ValidationResult
+from src.common.validators.base import ValidationResult, run_count_check
+
+if TYPE_CHECKING:
+    from src.common.neo4j_tools import Neo4jManager
 
 # ── Soft-check thresholds ─────────────────────────────────────────────────────
 # Update after a feed version change that genuinely alters these counts.
@@ -57,16 +63,16 @@ _FREE_FARE_PREFIX = "metrorail_free_fare"
 _RAIL_NETWORKS = {"metrorail", "metrorail_shuttle"}
 
 
-# ── Pre-load validator ────────────────────────────────────────────────────────
+# ── Pre-transform validator ───────────────────────────────────────────────────
 
 
-def validate_pre_load(
+def validate_pre_transform(
     stops: pd.DataFrame,
     fare_leg_rules: pd.DataFrame,
 ) -> ValidationResult:
     """
     Validates fare zone consistency against raw GTFS DataFrames.
-    Called at the end of fare/transform.py before returning results.
+    Called in fare/__init__.py after extract, before transform runs.
     """
     result = ValidationResult()
 
@@ -78,9 +84,9 @@ def validate_pre_load(
     # Build stop → set[zone_ids] to capture duplicate stop_id rows with
     # conflicting zones. set_index().to_dict() would silently keep only the
     # last value, masking multi-zone conflicts (Check 2).
-    stop_zone_sets: dict[str, set[str]] = defaultdict(set)
-    for _, row in zoned.iterrows():
-        stop_zone_sets[row["stop_id"]].add(row["zone_id"])
+    stop_zone_sets: dict[str, set[str]] = (
+        zoned.groupby("stop_id")["zone_id"].agg(set).to_dict()
+    )
 
     # Flat lookup for Check 1 / Check 3 (first zone wins; conflicts caught in Check 2)
     stop_zones: dict[str, str] = {
@@ -174,34 +180,37 @@ def validate_pre_load(
 
     # ── Check 3: faregate zones match parent station zones ───────────────────
 
-    mismatches: list[str] = []
-    no_parent: list[str] = []
+    no_parent_mask = gate_df["parent_station"].isna() | (gate_df["parent_station"] == "")
+    no_parent_gates = gate_df[no_parent_mask]
+    has_parent = gate_df[~no_parent_mask].copy()
 
-    for _, row in gate_df.iterrows():
-        parent = row["parent_station"]
-        if not parent or pd.isna(parent):
-            no_parent.append(row["stop_id"])
-            continue
-        station_zone = station_zones.get(parent)
-        if station_zone and station_zone != row["zone_id"]:
-            mismatches.append(
-                f"{row['stop_id']} (gate_zone={row['zone_id']}, "
-                f"station_zone={station_zone})"
-            )
+    if not has_parent.empty:
+        station_zone_series = pd.Series(station_zones, name="station_zone")
+        has_parent = has_parent.join(station_zone_series, on="parent_station")
+        known_station = has_parent["station_zone"].notna()
+        mismatch_rows = has_parent[known_station & (has_parent["zone_id"] != has_parent["station_zone"])]
+        mismatch_labels = (
+            mismatch_rows["stop_id"].astype(str)
+            + " (gate_zone=" + mismatch_rows["zone_id"].astype(str)
+            + ", station_zone=" + mismatch_rows["station_zone"].astype(str) + ")"
+        ).tolist()
+    else:
+        mismatch_labels = []
 
-    if mismatches:
+    if mismatch_labels:
         result.fail(
-            f"{len(mismatches)} faregate(s) have zone_id mismatching parent station: "
-            f"{mismatches[:3]}"
+            f"{len(mismatch_labels)} faregate(s) have zone_id mismatching parent station: "
+            f"{mismatch_labels[:3]}"
         )
     else:
         result.note(
             f"All {len(gate_df)} faregate zone_ids consistent with parent station"
         )
 
-    if no_parent:
+    if not no_parent_gates.empty:
         result.warn(
-            f"{len(no_parent)} faregate(s) have no parent_station: {no_parent[:3]}"
+            f"{len(no_parent_gates)} faregate(s) have no parent_station: "
+            f"{no_parent_gates['stop_id'].tolist()[:3]}"
         )
 
     # ── Known characteristic: Zone 53 has no faregates ───────────────────────
@@ -218,12 +227,10 @@ def validate_pre_load(
 # ── Post-load validator ───────────────────────────────────────────────────────
 
 
-def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-untyped-def]
+def validate_post_load(neo4j_manager: "Neo4jManager") -> ValidationResult:
     """
     Validates fare zone integrity by querying Neo4j after loading.
     Called at the end of fare/load.py after all writes complete.
-
-    neo4j_manager: instance of src.common.neo4j_tools.Neo4jManager
     """
     result = ValidationResult()
 
@@ -273,9 +280,7 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
     ]
 
     for cypher, ok_fn, err_fn, ok_msg in checks:
-        with neo4j_manager.driver.session() as session:
-            record = session.run(cypher).single()
-            n = record["n"] if record else 0
+        n = run_count_check(neo4j_manager, cypher)
         if ok_fn(n):
             result.note(ok_msg)
         else:
@@ -287,9 +292,7 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
     # the pipeline. Revise EXPECTED_FARE_ZONE_COUNT when the feed changes.
 
     if EXPECTED_FARE_ZONE_COUNT is not None:
-        with neo4j_manager.driver.session() as session:
-            record = session.run("MATCH (fz:FareZone) RETURN count(fz) AS n").single()
-            n = record["n"] if record else 0
+        n = run_count_check(neo4j_manager, "MATCH (fz:FareZone) RETURN count(fz) AS n")
         if n == EXPECTED_FARE_ZONE_COUNT:
             result.note(f"FareZone count matches expected ({EXPECTED_FARE_ZONE_COUNT})")
         else:
@@ -306,11 +309,7 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
     # Revise EXPECTED_FARE_LEG_RULE_COUNT when the feed changes.
 
     if EXPECTED_FARE_LEG_RULE_COUNT is not None:
-        with neo4j_manager.driver.session() as session:
-            record = session.run(
-                "MATCH (flr:FareLegRule) RETURN count(flr) AS n"
-            ).single()
-            n = record["n"] if record else 0
+        n = run_count_check(neo4j_manager, "MATCH (flr:FareLegRule) RETURN count(flr) AS n")
         if n == EXPECTED_FARE_LEG_RULE_COUNT:
             result.note(
                 f"FareLegRule count matches expected ({EXPECTED_FARE_LEG_RULE_COUNT})"

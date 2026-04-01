@@ -1,6 +1,6 @@
 # src/layers/physical/extract.py
 """
-Fare layer — Extract
+Physical layer — Extract
 
 Pulls the four GTFS files required by the physical layer from the shared
 gtfs_data dict produced by ingest/gtfs_loader.py.

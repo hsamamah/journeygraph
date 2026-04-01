@@ -1,10 +1,8 @@
 // queries/interruption/relationships.cypher
 // Parameterised MERGE statements for all interruption layer relationships.
-
 // ═══════════════════════════════════════════════════════════════════════════
 // TIER 1: Raw source node relationships
 // ═══════════════════════════════════════════════════════════════════════════
-
 // ── TripUpdate -[:UPDATES]-> Trip ────────────────────────────────────────
 // $rows: [{dedup_hash, trip_id}]
 UNWIND $rows AS row
@@ -23,10 +21,9 @@ MERGE (tu)-[:ON_DATE]->(d);
 // $rows: [{dedup_hash, parent_entity_id, stop_sequence}]
 UNWIND $rows AS row
 MATCH (tu:TripUpdate {dedup_hash: row.dedup_hash})
-MATCH (stu:StopTimeUpdate {
-  parent_entity_id: row.parent_entity_id,
-  stop_sequence: row.stop_sequence
-})
+MATCH
+  (stu:StopTimeUpdate
+    {parent_entity_id: row.parent_entity_id, stop_sequence: row.stop_sequence})
 MERGE (tu)-[:HAS_STOP_UPDATE]->(stu);
 
 // ── TripUpdate -[:FROM_FEED]-> FeedInfo ──────────────────────────────────
@@ -45,21 +42,22 @@ MERGE (tu)-[:FROM_FEED]->(fi);
 // instead of running two scans per row.
 // See CONVENTIONS.md → "Stop ID Prefix Conventions"
 UNWIND $rows AS row
-MATCH (stu:StopTimeUpdate {
-  parent_entity_id: row.parent_entity_id,
-  stop_sequence: row.stop_sequence
-})
+MATCH
+  (stu:StopTimeUpdate
+    {parent_entity_id: row.parent_entity_id, stop_sequence: row.stop_sequence})
 CALL {
   WITH stu, row
   CALL {
     WITH row
-    WITH row WHERE row.stop_id STARTS WITH 'PF_'
-    MATCH (stop:Platform {stop_id: row.stop_id})
-    RETURN stop
-    UNION ALL
     WITH row
-    WITH row WHERE NOT row.stop_id STARTS WITH 'PF_'
-    MATCH (stop:BusStop {stop_id: row.stop_id})
+    WHERE row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:Platform {id: row.stop_id})
+    RETURN stop
+      UNION ALL
+    WITH row
+    WITH row
+    WHERE NOT row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:BusStop {id: row.stop_id})
     RETURN stop
   }
   MERGE (stu)-[:AT_STOP]->(stop)
@@ -110,19 +108,22 @@ CALL {
   WITH es, row
   CALL {
     WITH row
-    WITH row WHERE row.stop_id STARTS WITH 'STN_'
-    MATCH (stop:Station {stop_id: row.stop_id})
-    RETURN stop
-    UNION ALL
     WITH row
-    WITH row WHERE row.stop_id STARTS WITH 'PF_'
-    MATCH (stop:Platform {stop_id: row.stop_id})
+    WHERE row.stop_id STARTS WITH 'STN_'
+    MATCH (stop:Station {id: row.stop_id})
     RETURN stop
-    UNION ALL
+      UNION ALL
     WITH row
-    WITH row WHERE NOT row.stop_id STARTS WITH 'STN_'
-      AND NOT row.stop_id STARTS WITH 'PF_'
-    MATCH (stop:BusStop {stop_id: row.stop_id})
+    WITH row
+    WHERE row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:Platform {id: row.stop_id})
+    RETURN stop
+      UNION ALL
+    WITH row
+    WITH row
+    WHERE
+      NOT row.stop_id STARTS WITH 'STN_' AND NOT row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:BusStop {id: row.stop_id})
     RETURN stop
   }
   MERGE (es)-[:TARGETS_STOP]->(stop)
@@ -181,19 +182,22 @@ CALL {
   WITH i, row
   CALL {
     WITH row
-    WITH row WHERE row.stop_id STARTS WITH 'STN_'
-    MATCH (stop:Station {stop_id: row.stop_id})
-    RETURN stop
-    UNION ALL
     WITH row
-    WITH row WHERE row.stop_id STARTS WITH 'PF_'
-    MATCH (stop:Platform {stop_id: row.stop_id})
+    WHERE row.stop_id STARTS WITH 'STN_'
+    MATCH (stop:Station {id: row.stop_id})
     RETURN stop
-    UNION ALL
+      UNION ALL
     WITH row
-    WITH row WHERE NOT row.stop_id STARTS WITH 'STN_'
-      AND NOT row.stop_id STARTS WITH 'PF_'
-    MATCH (stop:BusStop {stop_id: row.stop_id})
+    WITH row
+    WHERE row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:Platform {id: row.stop_id})
+    RETURN stop
+      UNION ALL
+    WITH row
+    WITH row
+    WHERE
+      NOT row.stop_id STARTS WITH 'STN_' AND NOT row.stop_id STARTS WITH 'PF_'
+    MATCH (stop:BusStop {id: row.stop_id})
     RETURN stop
   }
   MERGE (i)-[:AFFECTS_STOP]->(stop)
@@ -214,5 +218,8 @@ MERGE (i)-[:ON_DATE]->(d);
 // ── Rule 6: DURING_PLANNED_SERVICE — Interruption overlaps Maintenance ───
 // Links Interruptions to ServicePattern:Maintenance when they share a date.
 // $rows: (none — standalone query, no parameters)
-MATCH (i:Interruption)-[:ON_DATE]->(d:Date)<-[:ACTIVE_ON]-(sp:ServicePattern:Maintenance)
+MATCH
+  (i:Interruption)-[:ON_DATE]->
+  (d:Date)<-[:ACTIVE_ON]-
+  (sp:ServicePattern:Maintenance)
 MERGE (i)-[:DURING_PLANNED_SERVICE]->(sp);

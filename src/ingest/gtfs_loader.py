@@ -11,19 +11,17 @@ This module is the only place that touches raw GTFS files.
 All layer extract.py files receive the output of load() as their input.
 """
 
-from typing import TYPE_CHECKING
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Optional
 import zipfile
 
 import pandas as pd
 import requests
-from typing import Optional
 
 from src.common.config import get_config
 from src.common.logger import get_logger
 from src.common.paths import GTFS_DIR, RAW_DIR
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = get_logger(__name__)
 
@@ -92,11 +90,12 @@ def download(force: bool = False) -> Path:
     config = get_config()
     logger.info(f"Downloading GTFS feed from {config.gtfs_feed_url} ...")
     headers = {"api_key": config.wmata_api_key}
-    response = requests.get(config.gtfs_feed_url, headers=headers, timeout=60)
-    response.raise_for_status()
-
-    zip_path.write_bytes(response.content)
-    logger.info(f"Downloaded {len(response.content) / 1_000_000:.1f} MB → {zip_path}")
+    with requests.get(config.gtfs_feed_url, headers=headers, timeout=60, stream=True) as response:
+        response.raise_for_status()
+        with zip_path.open("wb") as f:
+            for chunk in response.iter_content(chunk_size=1 << 20):  # 1 MB chunks
+                f.write(chunk)
+    logger.info(f"Downloaded → {zip_path}")
     return zip_path
 
 
@@ -151,10 +150,17 @@ def load(
 
     logger.info("Parsing GTFS CSVs ...")
     data: dict[str, pd.DataFrame] = {}
-    for name in GTFS_FILES:
-        df = _parse_file(name)
-        if df is not None:
-            data[name] = df
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = {pool.submit(_parse_file, name): name for name in GTFS_FILES}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                df = fut.result()
+            except Exception as exc:
+                logger.error(f"Failed to parse {name}: {exc}")
+                raise
+            if df is not None:
+                data[name] = df
 
     logger.info("═" * 60)
     logger.info(f"GTFS LOAD COMPLETE — {len(data)} files loaded")

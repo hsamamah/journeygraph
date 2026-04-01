@@ -28,10 +28,10 @@ Prerequisites:
     python pipeline.py --layers physical fare
 """
 
-
 from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
+from src.common.validators.fare_zones import validate_pre_transform
 from src.layers.fare import extract, transform
 
 if TYPE_CHECKING:
@@ -44,8 +44,9 @@ def run(gtfs_data: dict[str, pd.DataFrame], neo4j) -> None:
     """
     Execute the full fare layer pipeline:
       1. Extract fare DataFrames from shared gtfs_data
-      2. Transform and validate (pre-load gate)
-      3. Load to Neo4j and validate (post-load gate)
+      2. Validate raw GTFS source data (pre-transform gate)
+      3. Transform into Neo4j-ready DataFrames
+      4. Load to Neo4j and validate (post-load gate)
 
     neo4j: Neo4jManager instance (injected by pipeline.py)
     """
@@ -54,6 +55,17 @@ def run(gtfs_data: dict[str, pd.DataFrame], neo4j) -> None:
 
     log.info("=== Fare layer: starting ===")
     raw = extract.run(gtfs_data)
+
+    # ── Pre-transform validation: checks raw GTFS before any logic runs ───────
+    log.info("fare: running pre-transform validation")
+    validation = validate_pre_transform(stops=raw["stops"], fare_leg_rules=raw["fare_leg_rules"])
+    log.info("fare: pre-transform validation result:\n%s", validation.summary())
+    if not validation.passed:
+        raise ValueError(
+            f"Fare layer pre-transform validation failed — aborting pipeline:\n"
+            f"{validation.summary()}"
+        )
+
     result = transform.run(raw)
     load.run(result, neo4j)
     log.info("=== Fare layer: complete ===")

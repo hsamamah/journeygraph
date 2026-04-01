@@ -29,7 +29,6 @@ Usage:
   python -m src.pipeline --layers interruption
 """
 
-
 from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger
