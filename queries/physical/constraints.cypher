@@ -36,10 +36,6 @@ REQUIRE n.level_id IS UNIQUE;
 
 // ── Additional indexes for common query patterns ───────────────────────────
 
-CREATE INDEX physical_station_name IF NOT EXISTS
-FOR (n:Station)
-ON (n.name);
-
 CREATE INDEX physical_pathway_mode IF NOT EXISTS
 FOR (n:Pathway)
 ON (n.mode);
@@ -47,3 +43,15 @@ ON (n.mode);
 CREATE INDEX physical_pathway_zone IF NOT EXISTS
 FOR (n:Pathway)
 ON (n.zone);
+
+CREATE FULLTEXT INDEX physical_station_name
+FOR (n:Station)
+ON EACH [n.name];
+
+CREATE FULLTEXT INDEX physical_route_name
+FOR (n:Route)
+ON EACH [n.route_short_name, n.route_long_name];
+
+CREATE FULLTEXT INDEX physical_pathway_name
+FOR (n:Pathway)
+ON EACH [n.name];

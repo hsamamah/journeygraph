@@ -40,10 +40,9 @@ def check_target_nodes(
         True if at least one node exists, False otherwise.
         Logs a warning on False.
     """
-    result = neo4j.query(f"MATCH (n:{label}) RETURN count(n) AS n LIMIT 1")
-    count = result[0]["n"] if result else 0
+    result = neo4j.query(f"MATCH (n:{label}) RETURN 1 LIMIT 1")
 
-    if count == 0:
+    if not result:
         log.warning(
             "⚠️  %s: no :%s nodes found — cross-layer relationships will "
             "be empty. Load the owning layer first to populate them.",

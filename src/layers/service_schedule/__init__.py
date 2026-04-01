@@ -28,7 +28,6 @@ Prerequisites:
   Physical layer must run first (Station, Platform, BusStop nodes).
 """
 
-
 from typing import TYPE_CHECKING
 
 from src.common.logger import get_logger

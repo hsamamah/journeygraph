@@ -32,6 +32,7 @@ nodes:
 # db.relationshipTypes() at startup. Direction prevents reversed arrows in
 # generated Cypher.
 relationships:
+  - { from: "Route", type: "SERVES", to: "Station" }
   - { from: "Date",         type: "ON_DATE",       to: "Interruption"  }
   - { from: "Interruption", type: "AFFECTS_TRIP",  to: "Trip"          }
   - { from: "Interruption", type: "AFFECTS_ROUTE", to: "Route"         }

@@ -21,8 +21,13 @@ queries/
 ├── cross_layer/
 │   └── analytical.cypher        ← queries spanning service+physical+fare
 ├── physical/
-├── accessibility/               ← OutageEvent queries (future)
-└── interruption/                ← GTFS-RT deviation queries (future)
+│   ├── constraints.cypher       ← includes BusStop constraint + indexes
+│   ├── nodes.cypher
+│   └── relationships.cypher
+└── interruption/
+    ├── constraints.cypher
+    ├── nodes.cypher
+    └── relationships.cypher
 ```
 
 ## Analytical query dependencies
@@ -51,5 +56,6 @@ def load_query(layer: str, name: str) -> str:
 - One logical operation per file (create nodes, create relationships, add indexes)
 - Use `MERGE` not `CREATE` for idempotency — pipeline may run more than once
 - Parameters use `$param` syntax, never string interpolation
+- Node identity property is `id` (mapped from GTFS `stop_id` in the physical layer transform)
 - Add a comment at the top of each file describing what it does
 - Analytical queries use `// ── Qn:` prefix for easy reference
