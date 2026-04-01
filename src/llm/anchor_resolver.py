@@ -388,7 +388,7 @@ class AnchorResolver:
                    node.name      AS name,
                    score,
                    elementId(node) AS element_id,
-                   size((node)-[:SERVES]-()) AS degree
+                   COUNT { (node)-[:SERVES]-() } AS degree
             ORDER BY score DESC, degree DESC
             LIMIT $k
             """,

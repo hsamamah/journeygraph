@@ -323,7 +323,7 @@ class TestAnchorResolverStrategyParams:
         result = resolver.resolve(anchors)
 
         mock_strategy.select.assert_not_called()
-        assert result.resolved_stations["Metro Center"] == "STN_A01"
+        assert result.resolved_stations["Metro Center"] == ["STN_A01"]
 
     def test_k_greater_than_1_calls_strategy(self):
         """
@@ -332,7 +332,7 @@ class TestAnchorResolverStrategyParams:
         """
         mock_db = MagicMock()
         mock_strategy = MagicMock()
-        mock_strategy.select.return_value = {"Metro Center": "STN_A01"}
+        mock_strategy.select_with_ties.return_value = {"Metro Center": ["STN_A01"]}
 
         # DB returns two candidates
         mock_db.query.return_value = [
@@ -354,8 +354,8 @@ class TestAnchorResolverStrategyParams:
         anchors = PlannerAnchors(stations=["Metro Center"])
         result = resolver.resolve(anchors)
 
-        mock_strategy.select.assert_called_once()
-        assert result.resolved_stations["Metro Center"] == "STN_A01"
+        mock_strategy.select_with_ties.assert_called_once()
+        assert result.resolved_stations["Metro Center"] == ["STN_A01"]
 
 
 # ── SubgraphOutput — resolver_config field ───────────────────────────────────

@@ -337,7 +337,7 @@ def _resolve_with_ties(
         + list(anchors.dates) + list(anchors.pathway_nodes)
     ):
         resolved = _get_resolved(resolutions, mention)
-        result[mention] = [resolved] if resolved else []
+        result[mention] = resolved if resolved else []
     return result
 
 
@@ -350,7 +350,7 @@ def _all_mentions(anchors: PlannerAnchors) -> list[str]:
     )
 
 
-def _get_resolved(resolutions: AnchorResolutions, mention: str) -> str | None:
+def _get_resolved(resolutions: AnchorResolutions, mention: str) -> list[str] | None:
     return (
         resolutions.resolved_stations.get(mention)
         or resolutions.resolved_routes.get(mention)
