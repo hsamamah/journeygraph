@@ -413,7 +413,7 @@ def _print_definitive(scenario, mentions, results_by_config, totals):
             elif failed or resolved is None:
                 cols.append("❌ (not resolved)")
                 config_pass[cfg["label"]] = False
-            elif resolved == expected:
+            elif expected in resolved:
                 cols.append(f"✅ {resolved}")
             else:
                 cols.append(f"❌ {resolved}")
@@ -477,7 +477,7 @@ def _print_limitation(scenario, mentions, results_by_config):
             resolutions = results_by_config[cfg["label"]]
             resolved = _get_resolved(resolutions, mention)
             failed = mention in resolutions.failed
-            cols.append("(not resolved)" if (failed or resolved is None) else resolved)
+            cols.append("(not resolved)" if (failed or resolved is None) else str(resolved))
         print(f"  {mention:<18}  " + "  ".join(f"{c:<{col_w}}" for c in cols))
 
     identical = all(
@@ -512,27 +512,13 @@ def main():
         invocation_time=invocation_time,
     )
 
-    s2_totals = {cfg["label"]: {"pass": 0, "total": 0} for cfg in CONFIGS}
-    print(f"\n{'─' * 72}")
-    print("  Section 2 — Multi-Anchor Disambiguation")
-    print("  Multiple stations and/or routes. Each mention resolved independently.")
-    print(f"{'─' * 72}")
-
-    for scenario in SECTION_2:
-        results_by_config = {}
-        for cfg in CONFIGS:
-            resolutions = _resolve(
-                scenario.anchors, db, invocation_time,
-                cfg["k"], cfg["strategy"],
-            )
-            results_by_config[cfg["label"]] = resolutions
-
-        mentions = _all_mentions(scenario.anchors)
-
-        if scenario.kind == "definitive":
-            _print_definitive(scenario, mentions, results_by_config, s2_totals)
-        elif scenario.kind == "ambiguous":
-            _print_ambiguous(scenario, mentions, results_by_config, db, invocation_time)
+    s2 = _run_section(
+        title="Section 2 — Multi-Anchor Disambiguation",
+        description="Multiple stations and/or routes. Each mention resolved independently.",
+        scenarios=SECTION_2,
+        db=db,
+        invocation_time=invocation_time,
+    )
 
     _run_section(
         title="Section 3 — Limitations",
@@ -554,7 +540,7 @@ def main():
     for cfg in CONFIGS:
         label      = cfg["label"]
         s1_c       = s1[label]
-        s2_c       = s2_totals[label]
+        s2_c       = s2[label]
         total_pass = s1_c["pass"]  + s2_c["pass"]
         total      = s1_c["total"] + s2_c["total"]
         pct        = 100 * total_pass // total if total else 0
