@@ -2,11 +2,13 @@
 """
 Service & Schedule layer integrity checks, run in two phases:
 
-  validate_pre_load  — checks raw GTFS DataFrames before any Neo4j writes
-  validate_post_load — checks the graph after all nodes and relationships
-                       have been committed
+  validate_pre_transform — checks raw GTFS DataFrames before any transformation
+                           runs. Called in service_schedule/__init__.py after
+                           extract, before transform.
+  validate_post_load     — checks the graph after all nodes and relationships
+                           have been committed.
 
-Pre-load checks (run against raw DataFrames in transform.py):
+Pre-transform checks (run against raw DataFrames before transform.py):
   1.  No duplicate trip_id in trips.txt
   2.  No shape_id maps to more than one route_id (RoutePattern identity)
   3.  No trip references a service_id absent from both calendar.txt and
@@ -41,15 +43,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from src.common.validators.base import ValidationResult
+from src.common.validators.base import ValidationResult, run_count_check
 
 if TYPE_CHECKING:
     import pandas as pd
+    from src.common.neo4j_tools import Neo4jManager
 
-# ── Pre-load validator ────────────────────────────────────────────────────────
+# ── Pre-transform validator ───────────────────────────────────────────────────
 
 
-def validate_pre_load(
+def validate_pre_transform(
     trips: pd.DataFrame,
     stop_times: pd.DataFrame,
     stops: pd.DataFrame,
@@ -59,8 +62,8 @@ def validate_pre_load(
     feed_end: str,
 ) -> ValidationResult:
     """
-    Validates raw GTFS DataFrames before any Neo4j writes.
-    Called at the end of service_schedule/transform.py before returning results.
+    Validates raw GTFS DataFrames before any transformation runs.
+    Called in service_schedule/__init__.py after extract, before transform.
 
     feed_start / feed_end: YYYYMMDD strings from feed_info.txt.
     """
@@ -201,19 +204,15 @@ def validate_pre_load(
 # ── Post-load validator ───────────────────────────────────────────────────────
 
 
-def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-untyped-def]
+def validate_post_load(neo4j_manager: "Neo4jManager") -> ValidationResult:
     """
     Validates service & schedule integrity by querying Neo4j after loading.
     Called at the end of service_schedule/load.py after all writes complete.
-
-    neo4j_manager: instance of src.common.neo4j_tools.Neo4jManager
     """
     result = ValidationResult()
 
     def _run(cypher: str) -> int:
-        with neo4j_manager.driver.session() as session:
-            record = session.run(cypher).single()
-            return record["n"] if record else 0
+        return run_count_check(neo4j_manager, cypher)
 
     # ── Blocking checks ───────────────────────────────────────────────────────
 
@@ -342,41 +341,37 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
         record = session.run(
             """
             MATCH (d:Date)
-            RETURN min(d.date) AS earliest, max(d.date) AS latest, count(d) AS n
+            WITH min(d.date) AS earliest, max(d.date) AS latest, count(d) AS n
+            OPTIONAL MATCH (fi:FeedInfo)
+            WITH earliest, latest, n, fi
+            ORDER BY fi.feed_version DESC
+            LIMIT 1
+            RETURN earliest, latest, n,
+                   fi.feed_start_date AS feed_start,
+                   fi.feed_end_date   AS feed_end
             """
         ).single()
 
-    if record:
+    if record and record["earliest"] is not None:
         earliest = record["earliest"]
         latest = record["latest"]
         n_dates = record["n"]
+        feed_start = record["feed_start"]
+        feed_end = record["feed_end"]
 
-        with neo4j_manager.driver.session() as session:
-            fi = session.run(
-                """
-                MATCH (fi:FeedInfo)
-                RETURN fi.feed_start_date AS feed_start, fi.feed_end_date AS feed_end
-                ORDER BY fi.feed_version DESC LIMIT 1
-                """
-            ).single()
-
-        if fi:
-            feed_start = str(fi["feed_start"])
-            feed_end = str(fi["feed_end"])
-
-            if earliest < feed_start:
-                result.warn(
-                    f"Earliest Date node ({earliest}) is before feed_start_date "
-                    f"({feed_start}) — calendar range clipping may not have applied. "
-                    f"Check _resolve_calendar in transform.py"
-                )
-            else:
-                result.note(
-                    f"Date range {earliest}–{latest} ({n_dates} nodes) is consistent "
-                    f"with feed window {feed_start}–{feed_end}"
-                )
-        else:
+        if feed_start is None:
             result.warn("Could not verify Date range — no FeedInfo node found in graph")
+        elif earliest < str(feed_start):
+            result.warn(
+                f"Earliest Date node ({earliest}) is before feed_start_date "
+                f"({feed_start}) — calendar range clipping may not have applied. "
+                f"Check _resolve_calendar in transform.py"
+            )
+        else:
+            result.note(
+                f"Date range {earliest}–{latest} ({n_dates} nodes) is consistent "
+                f"with feed window {feed_start}–{feed_end}"
+            )
 
     # ── Check 15: soft node counts ────────────────────────────────────────────
     #

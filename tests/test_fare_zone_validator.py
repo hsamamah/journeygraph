@@ -1,6 +1,6 @@
 # tests/test_fare_zone_validator.py
 """
-Tests for src/common/validators/fare_zones.py — validate_pre_load
+Tests for src/common/validators/fare_zones.py — validate_pre_transform
 
 Covers:
   - All area_ids resolve to a zone (happy path)
@@ -14,18 +14,18 @@ Covers:
 
 import pandas as pd
 
-from src.common.validators.fare_zones import validate_pre_load
+from src.common.validators.fare_zones import validate_pre_transform
 
 # ── Happy path ────────────────────────────────────────────────────────────────
 
 
 def test_all_checks_pass_with_clean_data(stops_df, fare_leg_rules_df):
-    result = validate_pre_load(stops_df, fare_leg_rules_df)
+    result = validate_pre_transform(stops_df, fare_leg_rules_df)
     assert result.passed
 
 
 def test_info_messages_populated_on_success(stops_df, fare_leg_rules_df):
-    result = validate_pre_load(stops_df, fare_leg_rules_df)
+    result = validate_pre_transform(stops_df, fare_leg_rules_df)
     assert len(result.info) > 0
 
 
@@ -42,7 +42,7 @@ def test_unresolved_area_id_fails(stops_df, fare_leg_rules_df):
         "fare_product_id": "metrorail_one_way_full_fare_225",
         "from_timeframe_group_id": "weekday_regular",
     }
-    result = validate_pre_load(stops_df, bad_rules)
+    result = validate_pre_transform(stops_df, bad_rules)
     assert not result.passed
     assert any("area_id" in e.lower() for e in result.errors)
 
@@ -67,7 +67,7 @@ def test_area_id_in_multiple_zones_fails(fare_leg_rules_df):
             dict(stop_id="STN_X99", zone_id="53", parent_station="", location_type="1"),
         ]
     )
-    result = validate_pre_load(stops_ambiguous, fare_leg_rules_df)
+    result = validate_pre_transform(stops_ambiguous, fare_leg_rules_df)
     assert not result.passed
     assert any("multiple zone" in e.lower() for e in result.errors)
 
@@ -96,7 +96,7 @@ def test_gate_zone_mismatch_fails(fare_leg_rules_df):
             ),
         ]
     )
-    result = validate_pre_load(stops_mismatch, fare_leg_rules_df)
+    result = validate_pre_transform(stops_mismatch, fare_leg_rules_df)
     assert not result.passed
     assert any("mismatch" in e.lower() for e in result.errors)
 
@@ -106,7 +106,7 @@ def test_gate_zone_mismatch_fails(fare_leg_rules_df):
 
 def test_zone_53_no_gates_produces_warning(stops_df, fare_leg_rules_df):
     """Zone 53 station exists but has no FG nodes — should warn, not fail."""
-    result = validate_pre_load(stops_df, fare_leg_rules_df)
+    result = validate_pre_transform(stops_df, fare_leg_rules_df)
     assert result.passed  # non-blocking
     assert any("53" in w for w in result.warnings)
 
@@ -137,7 +137,7 @@ def test_zone_53_with_gate_suppresses_warning(fare_leg_rules_df):
             ),
         ]
     )
-    result = validate_pre_load(stops_with_53_gate, fare_leg_rules_df)
+    result = validate_pre_transform(stops_with_53_gate, fare_leg_rules_df)
     assert result.passed
     assert not any("53" in w for w in result.warnings)
 
@@ -159,7 +159,7 @@ def test_bus_rows_with_no_area_pass(stops_df):
             ),
         ]
     )
-    result = validate_pre_load(stops_df, bus_only)
+    result = validate_pre_transform(stops_df, bus_only)
     assert result.passed
 
 
@@ -178,7 +178,7 @@ def test_no_faregates_in_stops_passes(fare_leg_rules_df):
             dict(stop_id="STN_X99", zone_id="53", parent_station="", location_type="1"),
         ]
     )
-    result = validate_pre_load(stops_no_gates, fare_leg_rules_df)
+    result = validate_pre_transform(stops_no_gates, fare_leg_rules_df)
     assert result.passed
 
 
@@ -190,7 +190,7 @@ def test_pre_load_passes_on_real_gtfs(real_stops_df, real_fare_leg_df):
     Full integration check against actual WMATA GTFS files.
     Skipped automatically if files are not present.
     """
-    result = validate_pre_load(real_stops_df, real_fare_leg_df)
+    result = validate_pre_transform(real_stops_df, real_fare_leg_df)
     assert result.passed, (
         f"Pre-load validation failed on real data:\n{result.summary()}"
     )
@@ -198,7 +198,7 @@ def test_pre_load_passes_on_real_gtfs(real_stops_df, real_fare_leg_df):
 
 def test_zone_counts_on_real_gtfs(real_stops_df, real_fare_leg_df):
     """Verify known counts from our earlier analysis hold in the real feed."""
-    result = validate_pre_load(real_stops_df, real_fare_leg_df)
+    result = validate_pre_transform(real_stops_df, real_fare_leg_df)
     station_zones = real_stops_df[
         real_stops_df["stop_id"].str.startswith("STN_", na=False)
         & real_stops_df["zone_id"].notna()

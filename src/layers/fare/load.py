@@ -39,6 +39,7 @@ import pandas as pd
 from src.common.cross_layer import check_target_nodes
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
+from src.common.neo4j_tools import df_to_rows
 from src.common.validators.fare_zones import validate_post_load
 
 if TYPE_CHECKING:
@@ -85,12 +86,6 @@ def _run_statements(
             neo4j.execute_write(stmt)
 
 
-def _df_to_rows(df: pd.DataFrame) -> list[dict]:
-    """Convert DataFrame to list of dicts, replacing NaN/NaT with None."""
-    return [
-        {k: (None if pd.isna(v) else v) for k, v in row.items()}
-        for row in df.to_dict(orient="records")
-    ]
 
 
 # ── Node loaders ──────────────────────────────────────────────────────────────
@@ -106,25 +101,25 @@ def _load_constraints(neo4j: Neo4jManager) -> None:
 def _load_fare_zones(neo4j: Neo4jManager, result: FareTransformResult) -> None:
     log.info("fare load: FareZone (%d nodes)", len(result.fare_zones))
     cypher = _extract_statement(_load_query("nodes.cypher"), "FareZone")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.fare_zones)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(result.fare_zones)})
 
 
 def _load_fare_media(neo4j: Neo4jManager, result: FareTransformResult) -> None:
     log.info("fare load: FareMedia (%d nodes)", len(result.fare_media))
     cypher = _extract_statement(_load_query("nodes.cypher"), "FareMedia")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.fare_media)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(result.fare_media)})
 
 
 def _load_fare_products(neo4j: Neo4jManager, result: FareTransformResult) -> None:
     log.info("fare load: FareProduct (%d nodes)", len(result.fare_products))
     cypher = _extract_statement(_load_query("nodes.cypher"), "FareProduct")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.fare_products)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(result.fare_products)})
 
 
 def _load_fare_leg_rules(neo4j: Neo4jManager, result: FareTransformResult) -> None:
     log.info("fare load: FareLegRule (%d nodes)", len(result.fare_leg_rules))
     cypher = _extract_statement(_load_query("nodes.cypher"), "FareLegRule")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.fare_leg_rules)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(result.fare_leg_rules)})
 
 
 def _load_fare_transfer_rules(neo4j: Neo4jManager, result: FareTransformResult) -> None:
@@ -140,7 +135,7 @@ def _load_fare_transfer_rules(neo4j: Neo4jManager, result: FareTransformResult) 
     df["rule_id"] = df["from_leg_group_id"] + "__" + df["to_leg_group_id"]
     log.info("fare load: FareTransferRule (%d nodes)", len(df))
     cypher = _extract_statement(_load_query("nodes.cypher"), "FareTransferRule")
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(df)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(df)})
 
 
 # ── Relationship loaders ───────────────────────────────────────────────────────
@@ -153,7 +148,7 @@ def _load_station_in_zone(neo4j: Neo4jManager, result: FareTransformResult) -> N
     cypher = _extract_statement(
         _load_query("relationships.cypher"), "Station -[:IN_ZONE]"
     )
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.station_zones)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(result.station_zones)})
 
 
 def _load_gate_in_zone(neo4j: Neo4jManager, result: FareTransformResult) -> None:
@@ -163,7 +158,7 @@ def _load_gate_in_zone(neo4j: Neo4jManager, result: FareTransformResult) -> None
     cypher = _extract_statement(
         _load_query("relationships.cypher"), "FareGate -[:IN_ZONE]"
     )
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.gate_zones)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(result.gate_zones)})
 
 
 def _load_gate_belongs_to(neo4j: Neo4jManager, result: FareTransformResult) -> None:
@@ -173,7 +168,7 @@ def _load_gate_belongs_to(neo4j: Neo4jManager, result: FareTransformResult) -> N
     cypher = _extract_statement(
         _load_query("relationships.cypher"), "FareGate -[:BELONGS_TO]"
     )
-    neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(result.gate_zones)})
+    neo4j.execute_write(cypher, parameters={"rows": df_to_rows(result.gate_zones)})
 
 
 def _load_media_product_rels(neo4j: Neo4jManager, result: FareTransformResult) -> None:
@@ -188,7 +183,7 @@ def _load_media_product_rels(neo4j: Neo4jManager, result: FareTransformResult) -
         log.warning("fare load: product_media_map is empty — skipping media rels")
         return
 
-    rows = _df_to_rows(result.product_media_map)
+    rows = df_to_rows(result.product_media_map)
     log.info("fare load: FareMedia -[:ACCEPTS]-> FareProduct (%d rels)", len(rows))
     neo4j.execute_write(accepts_cypher, parameters={"rows": rows})
     log.info("fare load: FareProduct -[:ACCEPTED_VIA]-> FareMedia (%d rels)", len(rows))
@@ -204,7 +199,7 @@ def _load_leg_rule_rels(neo4j: Neo4jManager, result: FareTransformResult) -> Non
     )
     from_cypher = _extract_statement(rel_cypher, "FareLegRule -[:FROM_AREA]")
     neo4j.execute_write(
-        from_cypher, parameters={"rows": _df_to_rows(result.leg_rule_from_area)}
+        from_cypher, parameters={"rows": df_to_rows(result.leg_rule_from_area)}
     )
 
     log.info(
@@ -213,7 +208,7 @@ def _load_leg_rule_rels(neo4j: Neo4jManager, result: FareTransformResult) -> Non
     )
     to_cypher = _extract_statement(rel_cypher, "FareLegRule -[:TO_AREA]")
     neo4j.execute_write(
-        to_cypher, parameters={"rows": _df_to_rows(result.leg_rule_to_area)}
+        to_cypher, parameters={"rows": df_to_rows(result.leg_rule_to_area)}
     )
 
     log.info(
@@ -223,7 +218,7 @@ def _load_leg_rule_rels(neo4j: Neo4jManager, result: FareTransformResult) -> Non
     applies_cypher = _extract_statement(rel_cypher, "FareLegRule -[:APPLIES_PRODUCT]")
     neo4j.execute_write(
         applies_cypher,
-        parameters={"rows": _df_to_rows(result.leg_rule_applies_product)},
+        parameters={"rows": df_to_rows(result.leg_rule_applies_product)},
     )
 
 
@@ -241,16 +236,18 @@ def _load_transfer_rule_rels(neo4j: Neo4jManager, result: FareTransformResult) -
     applies = _extract_statement(rel_cypher, "FareTransferRule -[:APPLIES_PRODUCT]")
 
     neo4j.execute_write(
-        from_leg, parameters={"rows": _df_to_rows(df[["rule_id", "from_leg_group_id"]])}
+        from_leg, parameters={"rows": df_to_rows(df[["rule_id", "from_leg_group_id"]])}
     )
     neo4j.execute_write(
-        to_leg, parameters={"rows": _df_to_rows(df[["rule_id", "to_leg_group_id"]])}
+        to_leg, parameters={"rows": df_to_rows(df[["rule_id", "to_leg_group_id"]])}
     )
 
     # APPLIES_PRODUCT only for non-free transfer rows
+    if "fare_product_id" not in df.columns:
+        return
     product_rows = df[df["fare_product_id"].notna()][["rule_id", "fare_product_id"]]
     if not product_rows.empty:
-        neo4j.execute_write(applies, parameters={"rows": _df_to_rows(product_rows)})
+        neo4j.execute_write(applies, parameters={"rows": df_to_rows(product_rows)})
 
 
 # ── Statement extractor ───────────────────────────────────────────────────────

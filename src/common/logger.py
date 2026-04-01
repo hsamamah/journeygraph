@@ -27,13 +27,16 @@ def get_logger(name: str) -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Console
-    sh = logging.StreamHandler(sys.stdout)
+    # Console — reconfigure stdout to UTF-8 so box-drawing chars survive
+    # Windows defaults to cp1252 which cannot encode them
+    sh = logging.StreamHandler(
+        stream=open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1, closefd=False)
+    )
     sh.setFormatter(formatter)
     logger.addHandler(sh)
 
     # File — anchored to LOG_DIR, not the calling directory
-    fh = logging.FileHandler(LOG_DIR / "pipeline.log")
+    fh = logging.FileHandler(LOG_DIR / "pipeline.log", encoding="utf-8")
     fh.setFormatter(formatter)
     logger.addHandler(fh)
 

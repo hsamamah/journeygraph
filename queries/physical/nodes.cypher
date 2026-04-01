@@ -47,12 +47,14 @@ SET
 
 // ── :Pathway ───────────────────────────────────────────────────────────────
 // Base node. Mode and zone labels applied separately via migration queries below.
-// $rows: [{id, from_stop_id, mode, zone, elevation_gain, wheelchair_accessible}]
+// $rows: [{id, from_stop_id, to_stop_id, mode, is_bidirectional, zone, elevation_gain, wheelchair_accessible}]
 UNWIND $rows AS row
 MERGE (pw:Pathway {id: row.id})
 SET
-  pw.stop_id = row.from_stop_id,
+  pw.from_stop_id = row.from_stop_id,
+  pw.to_stop_id = row.to_stop_id,
   pw.mode = row.mode,
+  pw.is_bidirectional = row.is_bidirectional,
   pw.zone = row.zone,
   pw.elevation_gain = row.elevation_gain,
   pw.wheelchair_accessible = row.wheelchair_accessible;
@@ -88,14 +90,14 @@ MATCH (pw:Pathway)
 WHERE pw.mode = 1
 SET pw: Walkway;
 
-// ── Pathway :PaidZone label ────────────────────────────────────────────────
+// ── Pathway :Paid label ────────────────────────────────────────────────────
 // Applied to pathways whose zone property is 'Paid'.
 MATCH (pw:Pathway)
 WHERE pw.zone = 'Paid'
-SET pw: PaidZone;
+SET pw: Paid;
 
-// ── Pathway :UnpaidZone label ──────────────────────────────────────────────
+// ── Pathway :Unpaid label ──────────────────────────────────────────────────
 // Applied to pathways whose zone property is 'Unpaid'.
 MATCH (pw:Pathway)
 WHERE pw.zone = 'Unpaid'
-SET pw: UnpaidZone;
+SET pw: Unpaid;

@@ -3,9 +3,12 @@
 Interruption layer integrity checks, run in two phases:
 
   validate_pre_load  — checks transformed DataFrames after dedup, before
-                       any Neo4j writes. GTFS-RT has no static file to
-                       validate upfront — this runs against the flattened
-                       protobuf output from extract + transform.
+                       any Neo4j writes. Unlike the physical/fare/service_schedule
+                       layers whose pre-transform validators check raw GTFS files,
+                       GTFS-RT has no static source to validate upfront — all
+                       meaningful checks require the dedup and rule-application
+                       that transform produces. This function is therefore named
+                       validate_pre_load (not validate_pre_transform) deliberately.
 
   validate_post_load — checks the graph after all three tiers have been
                        committed and Rule 6 enrichment has run.
@@ -48,10 +51,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from src.common.validators.base import ValidationResult
+from src.common.validators.base import ValidationResult, run_count_check
 
 if TYPE_CHECKING:
     import pandas as pd
+    from src.common.neo4j_tools import Neo4jManager
 
 # Effect values that Rule 4 maps to an Interruption type.
 # Alerts with effects outside this set are silently dropped.
@@ -64,6 +68,7 @@ _MAPPED_EFFECTS = {
     "MODIFIED_SERVICE",
     "STOP_MOVED",
     "ACCESSIBILITY_ISSUE",
+    "OTHER_EFFECT",  # mapped to service_change — WMATA uses for misc modifications
 }
 
 
@@ -252,19 +257,15 @@ def validate_pre_load(
 # ── Post-load validator ───────────────────────────────────────────────────────
 
 
-def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-untyped-def]
+def validate_post_load(neo4j_manager: "Neo4jManager") -> ValidationResult:
     """
     Validates the interruption layer graph after all writes and enrichment.
     Called at the end of interruption/load.py after _run_enrichment().
-
-    neo4j_manager: instance of src.common.neo4j_tools.Neo4jManager
     """
     result = ValidationResult()
 
     def _run(cypher: str) -> int:
-        with neo4j_manager.driver.session() as session:
-            record = session.run(cypher).single()
-            return record["n"] if record else 0
+        return run_count_check(neo4j_manager, cypher)
 
     # ── Blocking checks ───────────────────────────────────────────────────────
 
@@ -347,9 +348,10 @@ def validate_post_load(neo4j_manager) -> ValidationResult:  # type: ignore[no-un
         """
     )
     if n > 0:
-        result.note(
+        result.warn(
             f"{n} Interruption(s) have no ON_DATE → Date "
-            f"(null start_date expected for bus TripUpdates)"
+            f"(null start_date expected for bus TripUpdates — high counts may "
+            f"indicate a transform date-parsing issue)"
         )
     else:
         result.note("All Interruptions have ON_DATE → Date")

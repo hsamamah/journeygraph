@@ -1,5 +1,21 @@
 # src/common/validators/base.py
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.common.neo4j_tools import Neo4jManager
+
+
+def run_count_check(neo4j_manager: "Neo4jManager", cypher: str) -> int:
+    """
+    Run a single COUNT query against Neo4j and return the integer result.
+    Shared by all post-load validators to avoid duplicating session boilerplate.
+    """
+    with neo4j_manager.driver.session() as session:
+        record = session.run(cypher).single()
+        return record["n"] if record else 0
 
 
 @dataclass

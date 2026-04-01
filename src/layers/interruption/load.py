@@ -29,6 +29,7 @@ import pandas as pd
 
 from src.common.feed_info import ensure_feed_info
 from src.common.logger import get_logger
+from src.common.neo4j_tools import df_to_rows
 
 if TYPE_CHECKING:
     from src.common.neo4j_tools import Neo4jManager
@@ -76,11 +77,6 @@ def _split_statements(cypher: str) -> list[str]:
     return statements
 
 
-def _df_to_rows(df: pd.DataFrame) -> list[dict]:
-    return [
-        {k: (None if pd.isna(v) else v) for k, v in row.items()}
-        for row in df.to_dict(orient="records")
-    ]
 
 
 # ── Phase 3: Tier 1 nodes ───────────────────────────────────────────────────
@@ -128,7 +124,7 @@ def _load_tier1_nodes(neo4j: Neo4jManager, result: InterruptionTransformResult) 
         cypher = _extract_statement(nodes_cypher, ":TripUpdate")
         neo4j.batch_write(
             cypher,
-            _df_to_rows(result.trip_updates),
+            df_to_rows(result.trip_updates),
             batch_size=BATCH_SIZE,
             label="TripUpdate",
         )
@@ -141,7 +137,7 @@ def _load_tier1_nodes(neo4j: Neo4jManager, result: InterruptionTransformResult) 
         cypher = _extract_statement(nodes_cypher, ":StopTimeUpdate")
         neo4j.batch_write(
             cypher,
-            _df_to_rows(result.stop_time_updates),
+            df_to_rows(result.stop_time_updates),
             batch_size=BATCH_SIZE,
             label="StopTimeUpdate",
         )
@@ -152,7 +148,7 @@ def _load_tier1_nodes(neo4j: Neo4jManager, result: InterruptionTransformResult) 
         )
         cypher = _extract_statement(nodes_cypher, ":ServiceAlert")
         neo4j.execute_write(
-            cypher, parameters={"rows": _df_to_rows(result.service_alerts)}
+            cypher, parameters={"rows": df_to_rows(result.service_alerts)}
         )
 
     if not result.entity_selectors.empty:
@@ -161,7 +157,7 @@ def _load_tier1_nodes(neo4j: Neo4jManager, result: InterruptionTransformResult) 
         )
         cypher = _extract_statement(nodes_cypher, ":EntitySelector")
         neo4j.execute_write(
-            cypher, parameters={"rows": _df_to_rows(result.entity_selectors)}
+            cypher, parameters={"rows": df_to_rows(result.entity_selectors)}
         )
 
 
@@ -192,7 +188,7 @@ def _load_interruption_nodes(
             continue
         log.info("interruption load: Interruption:%s (%d nodes)", label, len(subset))
         cypher = _extract_statement(nodes_cypher, hint)
-        neo4j.execute_write(cypher, parameters={"rows": _df_to_rows(subset)})
+        neo4j.execute_write(cypher, parameters={"rows": df_to_rows(subset)})
 
 
 # ── Phase 5: Tier 1 relationships ───────────────────────────────────────────
@@ -214,7 +210,7 @@ def _load_tier1_rels(
             log.info("interruption load: TripUpdate -[:UPDATES]-> Trip (%d)", len(rows))
             neo4j.batch_write(
                 _extract_statement(rel_cypher, "TripUpdate -[:UPDATES]-> Trip"),
-                _df_to_rows(rows),
+                df_to_rows(rows),
                 batch_size=BATCH_SIZE,
                 label="UPDATES",
             )
@@ -229,7 +225,7 @@ def _load_tier1_rels(
             log.info("interruption load: TripUpdate -[:ON_DATE]-> Date (%d)", len(rows))
             neo4j.batch_write(
                 _extract_statement(rel_cypher, "TripUpdate -[:ON_DATE]-> Date"),
-                _df_to_rows(rows),
+                df_to_rows(rows),
                 batch_size=BATCH_SIZE,
                 label="TU ON_DATE",
             )
@@ -252,7 +248,7 @@ def _load_tier1_rels(
             )
             neo4j.batch_write(
                 _extract_statement(rel_cypher, "TripUpdate -[:HAS_STOP_UPDATE]"),
-                _df_to_rows(rows),
+                df_to_rows(rows),
                 batch_size=BATCH_SIZE,
                 label="HAS_STOP_UPDATE",
             )
@@ -266,7 +262,7 @@ def _load_tier1_rels(
         )
         neo4j.batch_write(
             _extract_statement(rel_cypher, "TripUpdate -[:FROM_FEED]"),
-            _df_to_rows(rows),
+            df_to_rows(rows),
             batch_size=BATCH_SIZE,
             label="TU FROM_FEED",
         )
@@ -280,7 +276,7 @@ def _load_tier1_rels(
             log.info("interruption load: StopTimeUpdate -[:AT_STOP] (%d)", len(rows))
             neo4j.batch_write(
                 _extract_statement(rel_cypher, "StopTimeUpdate -[:AT_STOP]"),
-                _df_to_rows(rows),
+                df_to_rows(rows),
                 batch_size=BATCH_SIZE,
                 label="AT_STOP",
             )
@@ -292,7 +288,7 @@ def _load_tier1_rels(
         log.info("interruption load: ServiceAlert -[:HAS_SELECTOR] (%d)", len(rows))
         neo4j.execute_write(
             _extract_statement(rel_cypher, "ServiceAlert -[:HAS_SELECTOR]"),
-            parameters={"rows": _df_to_rows(rows)},
+            parameters={"rows": df_to_rows(rows)},
         )
 
     # ServiceAlert -[:ACTIVE_ON]-> Date (derive dates from active_period)
@@ -301,8 +297,6 @@ def _load_tier1_rels(
             result.interruptions["interruption_id"].str.startswith("int_sa_")
         ][["date"]].dropna()
         if not sa_dates.empty:
-            # Map back to feed_entity_id
-            result.service_alerts[["feed_entity_id"]].copy()
             # Use the date from the interruption that was derived from this alert
             int_sa = result.interruptions[
                 result.interruptions["interruption_id"].str.startswith("int_sa_")
@@ -318,7 +312,7 @@ def _load_tier1_rels(
                 )
                 neo4j.execute_write(
                     _extract_statement(rel_cypher, "ServiceAlert -[:ACTIVE_ON]-> Date"),
-                    parameters={"rows": _df_to_rows(date_rows)},
+                    parameters={"rows": df_to_rows(date_rows)},
                 )
 
     # ServiceAlert -[:FROM_FEED]-> FeedInfo
@@ -330,7 +324,7 @@ def _load_tier1_rels(
         )
         neo4j.execute_write(
             _extract_statement(rel_cypher, "ServiceAlert -[:FROM_FEED]"),
-            parameters={"rows": _df_to_rows(rows)},
+            parameters={"rows": df_to_rows(rows)},
         )
 
     # EntitySelector -[:TARGETS_*] relationships
@@ -345,7 +339,7 @@ def _load_tier1_rels(
             )
             neo4j.execute_write(
                 _extract_statement(rel_cypher, "EntitySelector -[:TARGETS_ROUTE]"),
-                parameters={"rows": _df_to_rows(route_rows)},
+                parameters={"rows": df_to_rows(route_rows)},
             )
 
         trip_rows = es[es["trip_id"].notna()][["selector_group_id", "trip_id"]]
@@ -356,7 +350,7 @@ def _load_tier1_rels(
             )
             neo4j.execute_write(
                 _extract_statement(rel_cypher, "EntitySelector -[:TARGETS_TRIP]"),
-                parameters={"rows": _df_to_rows(trip_rows)},
+                parameters={"rows": df_to_rows(trip_rows)},
             )
 
         stop_rows = es[es["stop_id"].notna()][["selector_group_id", "stop_id"]]
@@ -367,7 +361,7 @@ def _load_tier1_rels(
             )
             neo4j.execute_write(
                 _extract_statement(rel_cypher, "EntitySelector -[:TARGETS_STOP]"),
-                parameters={"rows": _df_to_rows(stop_rows)},
+                parameters={"rows": df_to_rows(stop_rows)},
             )
 
         agency_rows = es[es["agency_id"].notna()][["selector_group_id", "agency_id"]]
@@ -378,7 +372,7 @@ def _load_tier1_rels(
             )
             neo4j.execute_write(
                 _extract_statement(rel_cypher, "EntitySelector -[:TARGETS_AGENCY]"),
-                parameters={"rows": _df_to_rows(agency_rows)},
+                parameters={"rows": df_to_rows(agency_rows)},
             )
 
 
@@ -403,7 +397,7 @@ def _load_tier2_rels(neo4j: Neo4jManager, result: InterruptionTransformResult) -
                     rel_cypher, "Interruption -[:SOURCED_FROM]-> TripUpdate"
                 ),
                 parameters={
-                    "rows": _df_to_rows(
+                    "rows": df_to_rows(
                         tu_sources[["interruption_id", "source_entity_id"]]
                     )
                 },
@@ -422,7 +416,7 @@ def _load_tier2_rels(neo4j: Neo4jManager, result: InterruptionTransformResult) -
                     rel_cypher, "Interruption -[:SOURCED_FROM]-> ServiceAlert"
                 ),
                 parameters={
-                    "rows": _df_to_rows(
+                    "rows": df_to_rows(
                         sa_sources[["interruption_id", "source_entity_id"]]
                     )
                 },
@@ -440,7 +434,7 @@ def _load_tier3_rels(neo4j: Neo4jManager, result: InterruptionTransformResult) -
         )
         neo4j.batch_write(
             _extract_statement(rel_cypher, "Interruption -[:AFFECTS_TRIP]"),
-            _df_to_rows(result.affects_trip),
+            df_to_rows(result.affects_trip),
             batch_size=BATCH_SIZE,
             label="AFFECTS_TRIP",
         )
@@ -453,7 +447,7 @@ def _load_tier3_rels(neo4j: Neo4jManager, result: InterruptionTransformResult) -
         )
         neo4j.execute_write(
             _extract_statement(rel_cypher, "Interruption -[:AFFECTS_ROUTE]"),
-            parameters={"rows": _df_to_rows(result.affects_route)},
+            parameters={"rows": df_to_rows(result.affects_route)},
         )
 
     # AFFECTS_STOP
@@ -464,7 +458,7 @@ def _load_tier3_rels(neo4j: Neo4jManager, result: InterruptionTransformResult) -
         )
         neo4j.execute_write(
             _extract_statement(rel_cypher, "Interruption -[:AFFECTS_STOP]"),
-            parameters={"rows": _df_to_rows(result.affects_stop)},
+            parameters={"rows": df_to_rows(result.affects_stop)},
         )
 
     # ON_DATE
@@ -475,7 +469,7 @@ def _load_tier3_rels(neo4j: Neo4jManager, result: InterruptionTransformResult) -
         log.info("interruption load: Interruption -[:ON_DATE] (%d)", len(int_dates))
         neo4j.execute_write(
             _extract_statement(rel_cypher, "Interruption -[:ON_DATE]-> Date"),
-            parameters={"rows": _df_to_rows(int_dates)},
+            parameters={"rows": df_to_rows(int_dates)},
         )
 
 
