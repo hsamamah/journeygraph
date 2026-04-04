@@ -222,7 +222,7 @@ class NarrationAgent:
             answer = self._invoke_llm(system_prompt, user_message)
         except Exception as exc:  # noqa: BLE001
             failure = f"NarrationAgent LLM call failed: {exc}"
-            log.error("NarrationAgent.run | LLM call failed | %s", exc)
+            log.error("NarrationAgent.run | LLM call failed | %s", exc, exc_info=True)
             return NarrationOutput(
                 answer="",
                 mode=mode,
@@ -371,12 +371,25 @@ class NarrationAgent:
     # ── LLM invocation ─────────────────────────────────────────────────────────
 
     def _invoke_llm(self, system_prompt: str, user_message: str) -> str:
-        """Invoke the LLM and return the raw response string."""
+        """Invoke the LLM and return the raw response string.
+
+        Raises:
+            ValueError: if the LLM returns non-string content (e.g. a tool-call
+                response with no text block, where .content is [] rather than str).
+                The caller's except Exception block converts this to a clean
+                NarrationOutput(success=False) with a meaningful failure_reason.
+        """
         response = self._llm.invoke(
             user_message,
             system_instruction=system_prompt,
         )
-        return response.content
+        content = response.content
+        if not isinstance(content, str):
+            raise ValueError(
+                f"LLM returned non-string content type {type(content)!r} — "
+                "expected a text response, got a tool-call or structured response."
+            )
+        return content
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 

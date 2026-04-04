@@ -383,8 +383,7 @@ class TestBuildTrace:
         )
         t2c = _make_t2c_output(success=False, error=error)
         trace = NarrationAgent._build_trace(_make_planner_output(), t2c, None, "degraded")
-        assert trace["text2cypher"]["error"]["check"] == "label_whitelist"
-        assert trace["text2cypher"]["error"]["detail"] == "Label :Foo not in slice"
+        assert trace["text2cypher"]["error"] == {"check": "label_whitelist", "detail": "Label :Foo not in slice"}
 
     def test_subgraph_trace_populated(self) -> None:
         sub = _make_subgraph_output(success=True, node_count=12, trimmed=True)
