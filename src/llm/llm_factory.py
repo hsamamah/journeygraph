@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-def build_llm(config: LLMConfig) -> LLMInterface:
+def build_llm(config: LLMConfig, *, max_tokens: int | None = None) -> LLMInterface:
     """
     Build and return an LLMInterface from LLMConfig.
 
@@ -39,7 +39,11 @@ def build_llm(config: LLMConfig) -> LLMInterface:
     calling build_llm() per query.
 
     Args:
-        config: Validated LLMConfig from get_llm_config().
+        config:     Validated LLMConfig from get_llm_config().
+        max_tokens: Optional override for the max_tokens model parameter.
+                    When None, config.llm_max_tokens is used. Pass
+                    config.llm_narration_max_tokens when building the
+                    NarrationAgent LLM instance.
 
     Returns:
         LLMInterface implementation for the configured provider.
@@ -48,16 +52,17 @@ def build_llm(config: LLMConfig) -> LLMInterface:
         ValueError: if config.llm_provider is not a supported provider.
     """
     provider = config.llm_provider.lower()
+    effective_max_tokens = max_tokens if max_tokens is not None else config.llm_max_tokens
 
     if provider == "anthropic":
         log.debug(
             "Building AnthropicLLM — model=%s, max_tokens=%d",
             config.llm_model,
-            config.llm_max_tokens,
+            effective_max_tokens,
         )
         return AnthropicLLM(
             model_name=config.llm_model,
-            model_params={"max_tokens": config.llm_max_tokens},
+            model_params={"max_tokens": effective_max_tokens},
             # api_key is read automatically from ANTHROPIC_API_KEY env var
             # by the anthropic SDK — consistent with how neo4j driver reads
             # NEO4J_URI. Explicit passing would duplicate what LLMConfig holds.
