@@ -431,10 +431,10 @@ class NarrationAgent:
             "anchor_notes": planner_output.anchor_notes,
             "parse_warning": planner_output.parse_warning,
             "anchors": {
-                "stations": planner_output.anchors.stations,
-                "routes": planner_output.anchors.routes,
-                "dates": planner_output.anchors.dates,
-                "pathway_nodes": planner_output.anchors.pathway_nodes,
+                "stations": list(planner_output.anchors.stations),
+                "routes": list(planner_output.anchors.routes),
+                "dates": list(planner_output.anchors.dates),
+                "pathway_nodes": list(planner_output.anchors.pathway_nodes),
             },
         }
 

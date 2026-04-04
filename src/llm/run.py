@@ -3,12 +3,11 @@
 JourneyGraph LLM Query Pipeline — run script.
 
 Entry point for natural language querying over the WMATA knowledge graph.
-Runs the Planner stage, shared anchor resolution, and where the path warrants
-it, the Subgraph path (HopExpander → ContextSerializer). Anchor resolution
-runs once after the Planner for all non-rejected queries — resolved IDs are
-shared across both the Subgraph and Text2Cypher paths. Downstream pipeline
-stages (Query Writer, Cypher Validator, Narration Agent) are not yet
-implemented.
+Runs the full pipeline: Planner → Anchor Resolution → Subgraph path →
+Narration Agent. Anchor resolution runs once after the Planner for all
+non-rejected queries — resolved IDs are shared across both the Subgraph and
+Text2Cypher paths. The Text2Cypher path (Query Writer, Cypher Validator) is
+implemented on a separate branch and not yet wired here.
 
 Usage:
     # Single query (default)
@@ -22,7 +21,6 @@ Usage:
 
     # Interactive REPL
     python -m src.llm.run --repl
-    python -m src.llm.run --repl
 
     # Hard-fail on any schema validation warning
     python -m src.llm.run "..." --strict
@@ -32,8 +30,9 @@ Startup sequence (same for all modes):
     2. Neo4jManager()     — hard fail if DB unreachable; connection held
                            open for subgraph queries during session
     3. SliceRegistry()    — validates slices against live graph
-    4. Planner()          — builds LLM instance
-    5. Enter selected mode
+    4. Planner()          — builds LLM instance (Stage 2)
+    5. NarrationAgent()   — builds LLM instance (narration)
+    6. Enter selected mode
 
 The SliceRegistry validation (DB-touching) always completes before any
 LLM call is made, so a misconfigured database never wastes API tokens.

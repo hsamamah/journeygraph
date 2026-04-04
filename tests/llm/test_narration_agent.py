@@ -18,7 +18,11 @@ All static methods are tested directly without instantiating NarrationAgent,
 mirroring the pattern in test_planner.py for _classify and _parse_json_response.
 """
 
+from typing import Any, Optional, Union
+
 import pytest
+from neo4j_graphrag.llm.base import LLMInterface
+from neo4j_graphrag.llm.types import LLMResponse
 
 from src.llm.narration_agent import (
     NarrationAgent,
@@ -440,3 +444,141 @@ class TestNarrationOutput:
         assert output.success is False
         assert output.answer == ""
         assert output.failure_reason == "LLM call timed out"
+
+
+# ── NarrationAgent.run() — failure path via stub LLM ─────────────────────────
+#
+# Tests the except-Exception branch in run() without a live API key.
+# A minimal stub LLMInterface raises on invoke() to trigger the failure path.
+
+
+class _RaisingLLM(LLMInterface):
+    """Stub LLMInterface that always raises on invoke()."""
+
+    def __init__(self, exc: Exception) -> None:
+        # Skip LLMInterface.__init__ (logs a deprecation warning, needs model_name)
+        self.model_name = "stub"
+        self.model_params = {}
+        self._exc = exc
+
+    def invoke(
+        self,
+        input: str,
+        message_history: Any = None,
+        system_instruction: Optional[str] = None,
+    ) -> LLMResponse:
+        raise self._exc
+
+    async def ainvoke(
+        self,
+        input: str,
+        message_history: Any = None,
+        system_instruction: Optional[str] = None,
+    ) -> LLMResponse:
+        raise self._exc  # pragma: no cover
+
+
+class _SuccessLLM(LLMInterface):
+    """Stub LLMInterface that always returns a fixed answer string."""
+
+    def __init__(self, answer: str = "stub answer") -> None:
+        self.model_name = "stub"
+        self.model_params = {}
+        self._answer = answer
+
+    def invoke(
+        self,
+        input: str,
+        message_history: Any = None,
+        system_instruction: Optional[str] = None,
+    ) -> LLMResponse:
+        return LLMResponse(content=self._answer)
+
+    async def ainvoke(
+        self,
+        input: str,
+        message_history: Any = None,
+        system_instruction: Optional[str] = None,
+    ) -> LLMResponse:
+        return LLMResponse(content=self._answer)  # pragma: no cover
+
+
+def _make_agent(llm: LLMInterface) -> NarrationAgent:
+    """Build a NarrationAgent with a pre-built stub LLM, bypassing build_llm()."""
+    from src.common.config import LLMConfig
+
+    config = LLMConfig(
+        anthropic_api_key="stub-key",
+        llm_provider="anthropic",
+        llm_model="stub",
+        llm_max_tokens=512,
+        llm_narration_max_tokens=1024,
+    )
+    agent = object.__new__(NarrationAgent)
+    agent._llm_config = config
+    agent._llm = llm
+    return agent
+
+
+class TestNarrationAgentRunFailurePath:
+    """Tests for the except-Exception branch in NarrationAgent.run()."""
+
+    def test_llm_exception_returns_success_false(self) -> None:
+        """Any exception from the LLM must produce success=False, not propagate."""
+        agent = _make_agent(_RaisingLLM(RuntimeError("connection reset")))
+        output = agent.run(
+            "how many cancellations",
+            _make_planner_output(),
+            t2c_output=None,
+            subgraph_output=_make_subgraph_output(),
+        )
+        assert output.success is False
+
+    def test_llm_exception_answer_is_empty(self) -> None:
+        agent = _make_agent(_RaisingLLM(RuntimeError("timeout")))
+        output = agent.run(
+            "query", _make_planner_output(), t2c_output=None, subgraph_output=None
+        )
+        assert output.answer == ""
+
+    def test_llm_exception_failure_reason_contains_type(self) -> None:
+        """failure_reason must include the exception class name for log searchability."""
+        agent = _make_agent(_RaisingLLM(ValueError("bad response")))
+        output = agent.run(
+            "query", _make_planner_output(), t2c_output=None, subgraph_output=None
+        )
+        assert "ValueError" in output.failure_reason
+
+    def test_llm_exception_trace_is_populated(self) -> None:
+        """Trace must still be built even when the LLM call fails."""
+        agent = _make_agent(_RaisingLLM(RuntimeError("oops")))
+        output = agent.run(
+            "query", _make_planner_output(), t2c_output=None, subgraph_output=None
+        )
+        assert "planner" in output.trace
+        assert "narration" in output.trace
+
+    def test_llm_success_returns_answer(self) -> None:
+        """Sanity check: stub LLM returning a string produces success=True."""
+        agent = _make_agent(_SuccessLLM("Four trips were cancelled."))
+        output = agent.run(
+            "how many cancellations",
+            _make_planner_output(),
+            t2c_output=None,
+            subgraph_output=_make_subgraph_output(),
+        )
+        assert output.success is True
+        assert output.answer == "Four trips were cancelled."
+
+    def test_non_string_llm_content_treated_as_failure(self) -> None:
+        """
+        If the LLM invoke() raises any exception (including pydantic ValidationError
+        when content is not a string), run() catches it and returns success=False.
+        This guards against silent corruption of NarrationOutput.answer.
+        """
+        agent = _make_agent(_RaisingLLM(ValueError("non-string content")))
+        output = agent.run(
+            "query", _make_planner_output(), t2c_output=None, subgraph_output=None
+        )
+        assert output.success is False
+        assert "ValueError" in output.failure_reason
