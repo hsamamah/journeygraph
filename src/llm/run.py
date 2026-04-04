@@ -48,6 +48,8 @@ import logging
 import sys
 from typing import TYPE_CHECKING
 
+from neo4j.exceptions import Neo4jError
+
 from src.common.config import get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
@@ -376,7 +378,17 @@ def _run_query(
         strategy=disambiguation_strategy,
         candidate_limit=candidate_limit,
     )
-    resolutions = resolver.resolve(planner_output.anchors)
+    try:
+        resolutions = resolver.resolve(planner_output.anchors)
+    except Neo4jError as exc:
+        log.error(
+            "run | anchor resolution failed | %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        print(f"\nDatabase error during anchor resolution: {exc}")
+        return planner_output, None, None
 
     if not resolutions.any_resolved:
         log.warning("run | zero anchors resolved | query=%r", query)
@@ -398,12 +410,23 @@ def _run_query(
 
     if planner_output.path in {"subgraph", "both"}:
         builder = SubgraphBuilder(db=db)
-        sub_output = builder.run(
-            planner_output,
-            resolutions,
-            resolver_config=resolver.config,
-        )
-        print(_fmt_subgraph_verbose(sub_output))
+        try:
+            sub_output = builder.run(
+                planner_output,
+                resolutions,
+                resolver_config=resolver.config,
+            )
+        except Neo4jError as exc:
+            log.error(
+                "run | subgraph expansion failed | %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            print(f"\nDatabase error during subgraph expansion: {exc}")
+            # Continue to narration with sub_output=None — degraded mode
+        else:
+            print(_fmt_subgraph_verbose(sub_output))
 
     # ── Narration Agent ───────────────────────────────────────────────────────
     # Text2Cypher path not yet wired — t2c_output=None. The Narration Agent
