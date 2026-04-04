@@ -53,11 +53,13 @@ from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.llm.anchor_resolver import AnchorResolver
 from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
+from src.llm.narration_agent import NarrationAgent
 from src.llm.planner import Planner
 from src.llm.slice_registry import SliceRegistry
 from src.llm.subgraph_builder import SubgraphBuilder
 
 if TYPE_CHECKING:
+    from src.llm.narration_output import NarrationOutput
     from src.llm.planner_output import PlannerOutput
     from src.llm.subgraph_output import SubgraphOutput
 
@@ -220,6 +222,58 @@ def _fmt_planner_verbose(
     return "\n".join(lines)
 
 
+# ── Output formatting — Narration ────────────────────────────────────────────
+
+
+def _fmt_narration(output: NarrationOutput) -> str:
+    lines: list[str] = []
+    lines.append("─── NarrationOutput ─────────────────────────────────────")
+    lines.append(f"  mode         : {output.mode!r}")
+    lines.append(f"  domain       : {output.domain!r}")
+    lines.append(f"  sources_used : {output.sources_used}")
+    lines.append(f"  success      : {output.success}")
+    if output.failure_reason:
+        lines.append(f"  ⚠ failure    : {output.failure_reason}")
+    lines.append("─── Pipeline Trace ──────────────────────────────────────")
+    trace = output.trace
+    planner_t = trace.get("planner", {})
+    lines.append(
+        f"  planner      : domain={planner_t.get('domain')!r}"
+        f"  path={planner_t.get('path')!r}"
+    )
+    lines.append(f"    path_reasoning : {planner_t.get('path_reasoning')!r}")
+    lines.append(f"    anchor_notes   : {planner_t.get('anchor_notes')!r}")
+    if planner_t.get("parse_warning"):
+        lines.append(f"    ⚠ parse_warning: {planner_t.get('parse_warning')}")
+    t2c_t = trace.get("text2cypher")
+    if t2c_t:
+        lines.append(
+            f"  text2cypher  : success={t2c_t.get('success')}"
+            f"  attempts={t2c_t.get('attempt_count')}"
+        )
+        if t2c_t.get("validation_notes"):
+            for note in t2c_t["validation_notes"]:
+                lines.append(f"    validator  : {note}")
+    else:
+        lines.append("  text2cypher  : not run")
+    sub_t = trace.get("subgraph")
+    if sub_t:
+        lines.append(
+            f"  subgraph     : success={sub_t.get('success')}"
+            f"  nodes={sub_t.get('node_count')}"
+            f"  trimmed={sub_t.get('trimmed')}"
+        )
+        lines.append(f"    anchors    : {sub_t.get('anchor_resolutions')}")
+    else:
+        lines.append("  subgraph     : not run")
+    lines.append("─── Answer ──────────────────────────────────────────────")
+    if output.answer:
+        lines.append(output.answer)
+    else:
+        lines.append("  (no answer — LLM call failed)")
+    return "\n".join(lines)
+
+
 # ── Output formatting — Subgraph ──────────────────────────────────────────────
 
 
@@ -258,35 +312,40 @@ def _fmt_subgraph_verbose(sub: SubgraphOutput) -> str:
 
 def _run_query(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
     query: str,
     *,
     candidate_limit: int = 1,
     strategy: str = "topk",
     label: str | None = None,
-) -> tuple[PlannerOutput, SubgraphOutput | None]:
+) -> tuple[PlannerOutput, SubgraphOutput | None, NarrationOutput | None]:
     """
-    Execute a single query through the Planner and, where the path
-    warrants it, the Subgraph path.
+    Execute a single query through the full pipeline.
+
+    Stages: Planner → Anchor Resolution → Subgraph path → Narration Agent.
+    Text2Cypher path is not yet wired (separate branch); the Narration Agent
+    receives t2c_output=None and selects contextual or degraded mode.
 
     invocation_time is captured once here so relative date expressions
     (yesterday, last Tuesday) resolve consistently within the same
     pipeline invocation.
 
     Args:
-        planner:         Initialised Planner instance.
-        db:              Live Neo4jManager — held open across queries.
-        query:           Raw query string.
-        candidate_limit: Max candidates per mention from full-text index.
-                         1 = baseline, no disambiguation.
-        strategy:        'topk' or 'coherence'. Ignored when
-                         candidate_limit=1.
-        label:           Optional prefix for --demo mode e.g. '[1/4]'.
+        planner:          Initialised Planner instance.
+        narration_agent:  Initialised NarrationAgent instance.
+        db:               Live Neo4jManager — held open across queries.
+        query:            Raw query string.
+        candidate_limit:  Max candidates per mention from full-text index.
+                          1 = baseline, no disambiguation.
+        strategy:         'topk' or 'coherence'. Ignored when
+                          candidate_limit=1.
+        label:            Optional prefix for --demo mode e.g. '[1/4]'.
 
     Returns:
-        (PlannerOutput, SubgraphOutput | None)
-        SubgraphOutput is None when the query is rejected, zero anchors
-        resolve, or path is text2cypher only.
+        (PlannerOutput, SubgraphOutput | None, NarrationOutput | None)
+        NarrationOutput is None only when the query is rejected or zero
+        anchors resolve (pipeline stops before narration).
     """
     invocation_time = datetime.now(UTC)
     prefix = f"{label}  " if label else ""
@@ -302,7 +361,7 @@ def _run_query(
     print(_fmt_planner_verbose(planner_output, stage1_scores=stage1_scores))
 
     if planner_output.rejected:
-        return planner_output, None
+        return planner_output, None, None
 
     # ── Anchor resolution — shared pre-fork step ──────────────────────────────
     # Runs for every non-rejected query regardless of path. Both Text2Cypher
@@ -326,7 +385,7 @@ def _run_query(
             "Please restate it with a specific station, route, or date "
             "(e.g. 'Metro Center', 'Red Line', 'yesterday')."
         )
-        return planner_output, None
+        return planner_output, None, None
 
     log.info(
         "run | anchors resolved | config=%s | %s",
@@ -346,7 +405,18 @@ def _run_query(
         )
         print(_fmt_subgraph_verbose(sub_output))
 
-    return planner_output, sub_output
+    # ── Narration Agent ───────────────────────────────────────────────────────
+    # Text2Cypher path not yet wired — t2c_output=None. The Narration Agent
+    # selects contextual mode (subgraph succeeded) or degraded (neither).
+    narration_output = narration_agent.run(
+        query,
+        planner_output,
+        t2c_output=None,
+        subgraph_output=sub_output,
+    )
+    print(_fmt_narration(narration_output))
+
+    return planner_output, sub_output, narration_output
 
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
@@ -354,17 +424,26 @@ def _run_query(
 
 def _mode_default(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
     query: str,
     *,
     candidate_limit: int,
     strategy: str,
 ) -> None:
-    _run_query(planner, db, query, candidate_limit=candidate_limit, strategy=strategy)
+    _run_query(
+        planner,
+        narration_agent,
+        db,
+        query,
+        candidate_limit=candidate_limit,
+        strategy=strategy,
+    )
 
 
 def _mode_demo(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
     *,
     candidate_limit: int,
@@ -379,8 +458,9 @@ def _mode_demo(
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, _ = _run_query(
+        planner_output, _, _ = _run_query(
             planner,
+            narration_agent,
             db,
             query,
             candidate_limit=candidate_limit,
@@ -407,6 +487,7 @@ def _mode_demo(
 
 def _mode_repl(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
     *,
     candidate_limit: int,
@@ -435,6 +516,7 @@ def _mode_repl(
 
         _run_query(
             planner,
+            narration_agent,
             db,
             query,
             candidate_limit=candidate_limit,
@@ -446,26 +528,30 @@ def _mode_repl(
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 
-def _startup(*, strict: bool) -> tuple[Planner, Neo4jManager]:
+def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager]:
     """
     Initialise the full pipeline stack.
 
-    Returns (Planner, Neo4jManager). The Neo4j connection is held open
-    across queries for the Subgraph path and closed by main() on exit
-    via the finally block.
+    Returns (Planner, NarrationAgent, Neo4jManager). The Neo4j connection
+    is held open across queries for the Subgraph path and closed by main()
+    on exit via the finally block.
 
     Sequencing:
-      1. LLM config   — hard fail if ANTHROPIC_API_KEY missing
-      2. Neo4j        — hard fail if DB unreachable
-      3. SliceRegistry— validates slices against live graph
-      4. Planner      — builds LLM instance
+      1. LLM config      — hard fail if ANTHROPIC_API_KEY missing
+      2. Neo4j           — hard fail if DB unreachable
+      3. SliceRegistry   — validates slices against live graph
+      4. Planner         — builds Planner LLM instance (LLM_MAX_TOKENS)
+      5. NarrationAgent  — builds Narration LLM instance
+                           (LLM_NARRATION_MAX_TOKENS)
     """
     llm_config = get_llm_config()
     log.info(
-        "LLM config loaded — provider=%s model=%s max_tokens=%d",
+        "LLM config loaded — provider=%s model=%s "
+        "planner_max_tokens=%d narration_max_tokens=%d",
         llm_config.llm_provider,
         llm_config.llm_model,
         llm_config.llm_max_tokens,
+        llm_config.llm_narration_max_tokens,
     )
 
     db = Neo4jManager()
@@ -476,7 +562,8 @@ def _startup(*, strict: bool) -> tuple[Planner, Neo4jManager]:
     # at query time.
 
     planner = Planner(registry, llm_config, strict=strict)
-    return planner, db
+    narration_agent = NarrationAgent(llm_config)
+    return planner, narration_agent, db
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -502,7 +589,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     try:
-        planner, db = _startup(strict=strict)
+        planner, narration_agent, db = _startup(strict=strict)
     except (OSError, RuntimeError) as exc:
         log.error("Startup failed: %s", exc)
         sys.exit(1)
@@ -511,6 +598,7 @@ def main(argv: list[str] | None = None) -> None:
         if args.demo:
             _mode_demo(
                 planner,
+                narration_agent,
                 db,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
@@ -518,6 +606,7 @@ def main(argv: list[str] | None = None) -> None:
         elif args.repl:
             _mode_repl(
                 planner,
+                narration_agent,
                 db,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
@@ -525,6 +614,7 @@ def main(argv: list[str] | None = None) -> None:
         elif args.query:
             _mode_default(
                 planner,
+                narration_agent,
                 db,
                 args.query,
                 candidate_limit=candidate_limit,
