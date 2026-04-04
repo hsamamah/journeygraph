@@ -48,6 +48,9 @@ def build_llm(config: LLMConfig, *, max_tokens: int | None = None) -> LLMInterfa
     Returns:
         LLMInterface implementation for the configured provider.
 
+        The returned instance is not thread-safe. Instantiate one instance
+        per thread if concurrent use is required.
+
     Raises:
         ValueError: if config.llm_provider is not a supported provider.
     """

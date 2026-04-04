@@ -221,8 +221,13 @@ class NarrationAgent:
         try:
             answer = self._invoke_llm(system_prompt, user_message)
         except Exception as exc:  # noqa: BLE001
-            failure = f"NarrationAgent LLM call failed: {exc}"
-            log.error("NarrationAgent.run | LLM call failed | %s", exc, exc_info=True)
+            failure = f"NarrationAgent LLM call failed [{type(exc).__name__}]: {exc}"
+            log.error(
+                "NarrationAgent.run | LLM call failed | %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
             return NarrationOutput(
                 answer="",
                 mode=mode,

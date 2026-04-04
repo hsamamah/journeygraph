@@ -29,7 +29,7 @@ from src.llm.narration_agent import (
 from src.llm.narration_output import NarrationOutput
 from src.llm.planner_output import PlannerAnchors, PlannerOutput
 from src.llm.subgraph_output import SubgraphOutput
-from src.llm.text2cypher_output import Text2CypherOutput, ValidationError
+from src.llm.text2cypher_output import Text2CypherOutput, ValidationCheck, ValidationError
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -376,7 +376,7 @@ class TestBuildTrace:
 
     def test_t2c_error_serialized(self) -> None:
         error = ValidationError(
-            check="label_whitelist",
+            check=ValidationCheck.LABEL_WHITELIST,
             detail="Label :Foo not in slice",
             violated_rule=":Foo",
             cypher_excerpt="MATCH (n:Foo)",

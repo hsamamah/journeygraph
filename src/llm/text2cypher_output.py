@@ -31,6 +31,22 @@ Design notes:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+
+
+class ValidationCheck(str, Enum):
+    """
+    Ordered set of checks the Cypher Validator applies.
+
+    Using str-Enum so values serialize to plain strings in JSON/trace dicts
+    and compare equal to their string equivalents (e.g. in tests).
+    """
+
+    SYNTAX = "syntax"
+    LABEL_WHITELIST = "label_whitelist"
+    REL_TYPE = "rel_type"
+    REL_DIRECTION = "rel_direction"
+    PROPERTY_NAMES = "property_names"
 
 
 @dataclass
@@ -40,8 +56,6 @@ class ValidationError:
 
     Attributes:
         check:          Which of the five ordered checks failed.
-                        Values: syntax | label_whitelist | rel_type |
-                        rel_direction | property_names
         detail:         Human-readable description of the failure e.g.
                         'Label :ServiceAlert not in slice for transfer_impact'
         violated_rule:  The exact slice entry or convention that was violated.
@@ -49,7 +63,7 @@ class ValidationError:
                         as a targeted retry hint for the Query Writer.
     """
 
-    check: str
+    check: ValidationCheck
     detail: str
     violated_rule: str
     cypher_excerpt: str
