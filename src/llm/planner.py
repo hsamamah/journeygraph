@@ -205,6 +205,12 @@ class Planner:
         self._llm_config = llm_config
         self._strict = strict
         self._llm = build_llm(llm_config)
+        # Circuit breaker: track Stage 2 JSON parse failures over a rolling
+        # window. If the failure rate is high the LLM or API is likely degraded
+        # and retrying is wasteful. _parse_attempts[i] is True on success.
+        self._parse_attempts: list[bool] = []
+        self._parse_window = 10  # rolling window size
+        self._parse_fail_threshold = 0.6  # fraction to trigger warning
         log.debug(
             "Planner ready — provider=%s model=%s strict=%s",
             llm_config.llm_provider,
@@ -295,11 +301,25 @@ class Planner:
         system_prompt = _STAGE2_SYSTEM_PROMPT.format(anchor_types=anchor_types)
         user_message = f'Domain: {domain}\nQuery: "{query}"'
 
+        # Circuit breaker: skip retry if recent parse failure rate is high
+        recent = self._parse_attempts[-self._parse_window :]
+        circuit_open = (
+            len(recent) >= self._parse_window
+            and recent.count(False) / len(recent) >= self._parse_fail_threshold
+        )
+        if circuit_open:
+            log.critical(
+                "Stage 2 circuit breaker open — %.0f%% parse failures in last %d "
+                "attempts; skipping retry to avoid wasting API tokens",
+                recent.count(False) / len(recent) * 100,
+                len(recent),
+            )
+
         # Attempt 1
         raw = self._invoke_llm(system_prompt, user_message)
         parsed, error = _parse_json_response(raw)
 
-        if parsed is None:
+        if parsed is None and not circuit_open:
             log.warning(
                 "Stage 2 JSON parse failed on attempt 1 — retrying. Error: %s", error
             )
@@ -308,7 +328,8 @@ class Planner:
             parsed, error = _parse_json_response(raw)
 
         if parsed is None:
-            # Both attempts failed — degrade gracefully
+            self._parse_attempts.append(False)
+            # Both attempts failed (or circuit open) — degrade gracefully
             warning = (
                 f"Stage 2 JSON parse failed after retry — degrading to "
                 f"text2cypher-only with empty anchors. "
@@ -316,6 +337,8 @@ class Planner:
             )
             log.warning(warning)
             return PlannerAnchors(), "text2cypher", None, None, warning
+
+        self._parse_attempts.append(True)
 
         # Extract path — default to text2cypher on missing or invalid value
         path = parsed.get("path", "text2cypher")

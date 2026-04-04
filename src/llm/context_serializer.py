@@ -41,12 +41,24 @@ log = logging.getLogger(__name__)
 # ── Budget ────────────────────────────────────────────────────────────────────
 
 TOKEN_BUDGET = 2_000
+# _TRIM_NOTICE_RESERVE accounts for the ~20-token trim notice that
+# SubgraphBuilder appends after budget enforcement. Without this reserve the
+# final context can silently exceed TOKEN_BUDGET by that margin.
+_EFFECTIVE_BUDGET = TOKEN_BUDGET - 30
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
 # cl100k_base is a close approximation for Claude-class models.
-# Loaded once at module level — encoding load is expensive.
+# Lazy-loaded on first _count_tokens() call to avoid ~100–200 ms startup
+# cost when context_serializer is imported but the subgraph path is not taken.
 
-_ENCODING = tiktoken.get_encoding("cl100k_base")
+_ENCODING = None
+
+
+def _get_encoding():
+    global _ENCODING
+    if _ENCODING is None:
+        _ENCODING = tiktoken.get_encoding("cl100k_base")
+    return _ENCODING
 
 # ── Trim priority groups ──────────────────────────────────────────────────────
 # Lower group number = removed first under budget pressure.
@@ -133,7 +145,7 @@ class ContextSerializer:
             raw.domain,
         )
 
-        if token_count <= TOKEN_BUDGET:
+        if token_count <= _EFFECTIVE_BUDGET:
             return SerializerResult(
                 context=context,
                 token_count=token_count,
@@ -194,7 +206,7 @@ class ContextSerializer:
         nodes_removed = 0
 
         for candidate in trim_candidates:
-            if token_count <= TOKEN_BUDGET:
+            if token_count <= _EFFECTIVE_BUDGET:
                 break
 
             # Subtract the token cost of this node's lines before mutating
@@ -222,15 +234,15 @@ class ContextSerializer:
         context = self._serialize(raw, nodes_by_eid, rel_index, resolutions)
         token_count = _count_tokens(context)
 
-        if token_count > TOKEN_BUDGET:
+        if token_count > _EFFECTIVE_BUDGET:
             # Trim candidates exhausted — only anchors remain. Log and continue:
             # the Narration Agent will receive a trimmed=True signal and degrade
             # gracefully. Anchors are never removed regardless.
             log.warning(
                 "context_serializer | budget not met after exhausting trim candidates "
-                "| tokens=%d budget=%d | domain=%s",
+                "| tokens=%d effective_budget=%d | domain=%s",
                 token_count,
-                TOKEN_BUDGET,
+                _EFFECTIVE_BUDGET,
                 raw.domain,
             )
 
@@ -319,7 +331,7 @@ class ContextSerializer:
 
 
 def _count_tokens(text: str) -> int:
-    return len(_ENCODING.encode(text))
+    return len(_get_encoding().encode(text))
 
 
 def _removal_token_delta(

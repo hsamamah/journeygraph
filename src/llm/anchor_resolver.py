@@ -59,6 +59,12 @@ PATHWAY_PREFIX_TO_LABEL: dict[str, str] = {
 
 _YYYYMMDD_RE = re.compile(r"^\d{8}$")
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_LUCENE_ESCAPE_RE = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
+
+
+def _escape_lucene(name: str) -> str:
+    """Escape special characters for Neo4j full-text (Lucene) queries."""
+    return _LUCENE_ESCAPE_RE.sub(r"\\\1", name)
 
 
 # ── Candidate — intermediate type produced by generation, consumed by strategy
@@ -379,7 +385,7 @@ class AnchorResolver:
         ranked by string match score, then by degree on SERVES/SCHEDULED_AT
         as a tiebreaker within equal scores.
         """
-        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+        clean_name = _escape_lucene(name)
 
         rows = self.db.query(
             """
@@ -416,7 +422,7 @@ class AnchorResolver:
         Full-text index lookup for routes. Returns up to self._k candidates.
         Single-pass: handles short name exact match and long name substring.
         """
-        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+        clean_name = _escape_lucene(name)
         lucene_query = (
             f'route_short_name:"{clean_name}" OR route_long_name:*{clean_name}*'
         )
@@ -588,7 +594,7 @@ class AnchorResolver:
             )
             return []
 
-        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+        clean_name = _escape_lucene(name)
         rows = self.db.query(
             """
             CALL db.index.fulltext.queryNodes("physical_pathway_name", $name_query) YIELD node AS p, score
