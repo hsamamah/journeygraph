@@ -281,8 +281,10 @@ class TestPathwayJoinerTier1:
         result = pathway_joiner._tier1_match(outage_s, pathway_candidates_df)
         assert result == "C03_ESC_S_BT"
 
-    def test_wrong_zone_returns_none(self, pathway_candidates_df):
-        # No N-zone escalator at C03
+    def test_wrong_zone_falls_back_to_station(self, pathway_candidates_df):
+        # C03 has only an S-zone escalator; unit_name "C03N01" requests N-zone.
+        # Strategy F falls back to the full station pool when the requested zone
+        # doesn't exist — so the description match still resolves C03_ESC_S_BT.
         outage = _make_outage_series(
             unit_name="C03N01",
             station_code="C03",
@@ -290,15 +292,16 @@ class TestPathwayJoinerTier1:
             location_description="Escalator between street and mezzanine",
         )
         result = pathway_joiner._tier1_match(outage, pathway_candidates_df)
-        assert result is None
+        assert result == "C03_ESC_S_BT"
 
-    def test_segment_keyword_platform_maps_to_tp(self, pathway_candidates_df):
-        # "platform" keyword → _TP; description must not contain other keywords first
+    def test_between_mezzanine_platform_maps_to_tp(self, pathway_candidates_df):
+        # WMATA description "between mezzanine and platform" → wmata_key "mezzanine_platform"
+        # Only A02_ESC_W_TP has a matching from_desc → F1 resolves it uniquely.
         outage = _make_outage_series(
             unit_name="A02W05",
             station_code="A02",
             unit_type="ESCALATOR",
-            location_description="Escalator serving platform level",
+            location_description="Escalator between mezzanine and platform",
         )
         result = pathway_joiner._tier1_match(outage, pathway_candidates_df)
         assert result == "A02_ESC_W_TP"
@@ -346,12 +349,13 @@ class TestPathwayJoinerTier1:
 
 class TestPathwayJoinerTier2:
     def test_hit_returns_pathway_id(self, monkeypatch):
+        # _STATIC_LOOKUP is keyed by (unit_name, unit_type) tuple
         monkeypatch.setattr(
             pathway_joiner,
             "_STATIC_LOOKUP",
-            {"A01E04": "A01_C01_104115"},
+            {("A01E04", "ELEVATOR"): "A01_C01_104115"},
         )
-        outage = _make_outage_series(unit_name="A01E04", station_code="A01")
+        outage = _make_outage_series(unit_name="A01E04", station_code="A01", unit_type="ELEVATOR")
         result = pathway_joiner._tier2_match(outage)
         assert result == "A01_C01_104115"
 

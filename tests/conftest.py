@@ -418,21 +418,51 @@ def raw_outages_dict(raw_outage_rows) -> dict:
 @pytest.fixture
 def pathway_candidates_df() -> "pd.DataFrame":
     """
-    Minimal Pathway candidates DataFrame matching _fetch_pathway_candidates() output.
+    Minimal Pathway candidates DataFrame matching _enrich_candidates() output.
     Covers: mode 4 (escalator) and mode 5 (elevator) at two stations.
+
     NODE_ encoding: NODE_{station}_{zone}_{type}{seq}_{pos}
+    from_desc / to_desc mirror the GTFS stop_desc values that Strategy F uses
+    for description-based matching; from_seq / to_seq are extracted from the
+    ESC/ELE number in the stop_id (e.g. ESC1 → 1).
     """
     import pandas as pd
     return pd.DataFrame([
         # A02 — escalator, W zone, street-to-mezzanine (_BT)
-        dict(pathway_id="A02_ESC_W_BT", from_stop_id="NODE_A02_W_ESC1_BT", to_stop_id="NODE_A02_W_FG_PAID", mode=4),
+        dict(
+            pathway_id="A02_ESC_W_BT",
+            from_stop_id="NODE_A02_W_ESC1_BT", to_stop_id="NODE_A02_W_FG_PAID",
+            mode=4,
+            from_desc="Bottom of Escalator Between Street and Mezzanine",
+            to_desc="",
+            from_seq=1, to_seq=None,
+        ),
         # A02 — escalator, W zone, mezzanine-to-platform (_TP)
-        dict(pathway_id="A02_ESC_W_TP", from_stop_id="NODE_A02_W_ESC2_TP", to_stop_id="NODE_A02_W_PLT",     mode=4),
-        # A02 — elevator, W zone; no _BT/_TP position suffix on either endpoint.
-        # Elevators in WMATA GTFS are single-unit pathways — no top/bottom split.
-        dict(pathway_id="A02_ELE_W",    from_stop_id="NODE_A02_W_ELE1",     to_stop_id="NODE_A02_W_ELE2",    mode=5),
+        dict(
+            pathway_id="A02_ESC_W_TP",
+            from_stop_id="NODE_A02_W_ESC2_TP", to_stop_id="NODE_A02_W_PLT",
+            mode=4,
+            from_desc="Bottom of Escalator Between Mezzanine and Platform",
+            to_desc="",
+            from_seq=2, to_seq=None,
+        ),
+        # A02 — elevator, W zone; single-unit pathway, no _BT/_TP split.
+        dict(
+            pathway_id="A02_ELE_W",
+            from_stop_id="NODE_A02_W_ELE1", to_stop_id="NODE_A02_W_ELE2",
+            mode=5,
+            from_desc="", to_desc="",
+            from_seq=1, to_seq=2,
+        ),
         # C03 — escalator, S zone, street-to-mezzanine (_BT)
-        dict(pathway_id="C03_ESC_S_BT", from_stop_id="NODE_C03_S_ESC1_BT",  to_stop_id="NODE_C03_S_FG_PAID", mode=4),
+        dict(
+            pathway_id="C03_ESC_S_BT",
+            from_stop_id="NODE_C03_S_ESC1_BT", to_stop_id="NODE_C03_S_FG_PAID",
+            mode=4,
+            from_desc="Bottom of Escalator Between Street and Mezzanine",
+            to_desc="",
+            from_seq=1, to_seq=None,
+        ),
     ])
 
 
