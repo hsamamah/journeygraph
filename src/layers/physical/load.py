@@ -46,6 +46,8 @@ log = get_logger(__name__)
 # Resolve Cypher query files relative to repo root
 _QUERY_DIR = Path(__file__).parents[3] / "queries" / "physical"
 
+_LEVEL_REL_BATCH_SIZE = 500
+
 # ── Cypher file helpers ────────────────────────────────────────────────────────
 
 
@@ -254,7 +256,7 @@ def _load_stop_on_level(neo4j: Neo4jManager, stop_on_level: pd.DataFrame) -> Non
         "physical load: (stop_entity) -[:ON_LEVEL]-> Level (%d rels)", len(stop_on_level)
     )
     stmt = _extract_statement(_load_query("relationships.cypher"), "(stop_entity) -[:ON_LEVEL]-> Level")
-    neo4j.execute_write(stmt, parameters={"rows": df_to_rows(stop_on_level)})
+    neo4j.batch_write(stmt, df_to_rows(stop_on_level), batch_size=_LEVEL_REL_BATCH_SIZE, label="ON_LEVEL(stop)")
 
 
 def _load_pathway_on_level(
@@ -274,7 +276,7 @@ def _load_pathway_on_level(
             continue
         log.info("physical load: Pathway -[:%s]-> Level (%d rels)", rel_type, len(df))
         stmt = _extract_statement(rel_cypher, hint)
-        neo4j.execute_write(stmt, parameters={"rows": df_to_rows(df)})
+        neo4j.batch_write(stmt, df_to_rows(df), batch_size=_LEVEL_REL_BATCH_SIZE, label=rel_type)
 
 
 def _derive_station_contains_pathway(neo4j: Neo4jManager) -> None:
