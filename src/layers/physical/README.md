@@ -39,6 +39,8 @@ Entry point is `run()` in `__init__.py`, called by `pipeline.py`. It orchestrate
 | `Pathway` | `id` | `pathways.txt` | `:Escalator` (mode 4), `:Elevator` (mode 5), `:Stairs` (mode 2), `:Walkway` (mode 1), `:Paid`, `:Unpaid` |
 | `Level` | `level_id` | `levels.txt` | — |
 
+`Pathway` nodes carry `from_stop_id`, `to_stop_id`, `from_stop_desc`, `to_stop_desc`, `mode`, `is_bidirectional`, `zone`, `elevation_gain`, and `wheelchair_accessible`. The `from_stop_desc` / `to_stop_desc` properties hold the human-readable GTFS `stop_desc` of each endpoint's `NODE_` stop — used by the accessibility layer's pathway join to match outage descriptions against segment vocabulary.
+
 All node `id` values are the GTFS `stop_id` (renamed by transform). Uniqueness constraints are applied on first load — see `queries/physical/constraints.cypher`.
 
 ### Relationships
@@ -177,7 +179,7 @@ Runs after all nodes and relationships are written. Failures 6–9 and 11 block 
 | `__init__.py` | Orchestrator — runs extract → validate → transform → load in order |
 | `extract.py` | Pulls `stops`, `pathways`, `levels`, `feed_info` from the shared `gtfs_data` dict |
 | `transform.py` | Cleans stops and pathways, partitions nodes by type, classifies zone anchors, categorises pathway zones, classifies endpoints, builds directional link frames and pathway chain links |
-| `load.py` | Writes all nodes and relationships to Neo4j using parameterised Cypher from `queries/physical/` |
+| `load.py` | Writes all nodes and relationships to Neo4j using parameterised Cypher from `queries/physical/`. Uses `df_to_rows()` from `src.common.neo4j_tools` for `NaN`/`NaT` → `None` conversion. |
 | `endpoint_classifier.py` | `EndpointClass` enum and `classify_endpoints()` — classifies each pathway endpoint as MATCHED, DEFERRED, GAP, or MISSING |
 
 Cypher files live in `queries/physical/` (outside this package):
