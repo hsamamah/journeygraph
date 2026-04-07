@@ -116,9 +116,16 @@ MERGE (px)-[:LINKS]->(py);
 // ── (stop_entity) -[:ON_LEVEL]-> Level ───────────────────────────────────────
 // Wire all stop nodes (Station, StationEntrance, Platform, FareGate, BusStop)
 // to the Level node they reside on.
+// Each OPTIONAL MATCH uses its label's unique index — avoids the full node
+// scan that a label-less MATCH (n {id: ...}) would cause.
 // $rows: [{stop_id, level_id}]
 UNWIND $rows AS row
-MATCH (n {id: row.stop_id})
+OPTIONAL MATCH (stn:Station          {id: row.stop_id})
+OPTIONAL MATCH (ent:StationEntrance  {id: row.stop_id})
+OPTIONAL MATCH (pf:Platform          {id: row.stop_id})
+OPTIONAL MATCH (fg:FareGate          {id: row.stop_id})
+WITH row, coalesce(stn, ent, pf, fg) AS n
+WHERE n IS NOT NULL
 MATCH (lv:Level {level_id: row.level_id})
 MERGE (n)-[:ON_LEVEL]->(lv);
 
