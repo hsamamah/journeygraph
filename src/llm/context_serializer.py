@@ -65,12 +65,16 @@ def _get_encoding():
 # Any label not listed falls into group 2 (service layer default).
 
 _PROVENANCE_LABELS = {"TripUpdate", "ServiceAlert", "StopTimeUpdate"}
+_LEVEL_LABELS = {"Level"}
 _INTERRUPTION_LABELS = {"Interruption", "OutageEvent"}
 _SERVICE_LABELS = {"Trip", "Route", "Platform", "BusStop", "Date"}
 
 # Group 1 = first trimmed, Group 3 = last trimmed (anchors never in this table)
+# Level nodes carry supporting context (floor names/indices) but are not primary
+# answer nodes — they are trimmed first alongside provenance.
 _LABEL_TO_TRIM_GROUP: dict[str, int] = (
     dict.fromkeys(_PROVENANCE_LABELS, 1)
+    | dict.fromkeys(_LEVEL_LABELS, 1)
     | dict.fromkeys(_SERVICE_LABELS, 2)
     | dict.fromkeys(_INTERRUPTION_LABELS, 3)
 )

@@ -467,4 +467,5 @@ def _extract_anchors(raw_anchors: dict) -> PlannerAnchors:
         routes=_to_str_list(raw_anchors.get("routes")),
         dates=_to_str_list(raw_anchors.get("dates")),
         pathway_nodes=_to_str_list(raw_anchors.get("pathway_nodes")),
+        levels=_to_str_list(raw_anchors.get("levels")),
     )

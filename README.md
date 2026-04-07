@@ -5,7 +5,7 @@ A Neo4j knowledge graph of the WMATA Washington DC Metro transit system, built o
 - **ETL pipeline** (`src/pipeline.py`) — ingests GTFS static and WMATA API data into Neo4j across five domain layers
 - **LLM query pipeline** (`src/llm/`) — natural language querying over the graph via a multi-agent pipeline
 
-> **Current state:** All five ETL layers are implemented. The LLM pipeline has the Planner (L3), Text2Cypher (L4), and Subgraph Context Builder (L5) stages implemented — see [`src/llm/README.md`](src/llm/README.md) for details.
+> **Current state:** All five ETL layers are implemented. The LLM pipeline is complete through L6 — Planner (L3), Text2Cypher (L4), Subgraph Context Builder (L5), and Narration Agent (L6) — see [`src/llm/README.md`](src/llm/README.md) for details.
 
 ---
 

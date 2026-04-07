@@ -39,10 +39,12 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
     "accessibility": DomainExpansionConfig(
         max_hops=3,
         expand_rels=[
-            "BELONGS_TO",
-            "CONNECTED_BY",
+            "CONTAINS",
             "AFFECTS",
             "AFFECTS_STOP",
+            "ON_LEVEL",
+            "STARTING_LEVEL",
+            "ENDING_LEVEL",
         ],
         include_labels=[
             "Station",
@@ -50,6 +52,7 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
             "OutageEvent",
             "Interruption",
             "Date",
+            "Level",
         ],
         provenance_rels=[
             "SOURCED_FROM",

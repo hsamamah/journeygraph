@@ -179,6 +179,8 @@ class AnchorResolutions:
     # expr → [YYYYMMDD, ...]  dates are deterministic so always length 1
     resolved_pathway_nodes: dict[str, list[str]] = field(default_factory=dict)
     # name → [id, ...]
+    resolved_levels: dict[str, list[str]] = field(default_factory=dict)
+    # name/description → [level_id, ...]
     failed: dict[str, str] = field(default_factory=dict)
     # anchor → reason — mentions that produced zero candidates or were declined
 
@@ -190,6 +192,7 @@ class AnchorResolutions:
                 self.resolved_routes,
                 self.resolved_dates,
                 self.resolved_pathway_nodes,
+                self.resolved_levels,
             ]
         )
 
@@ -205,6 +208,7 @@ class AnchorResolutions:
             **self.resolved_routes,
             **self.resolved_dates,
             **self.resolved_pathway_nodes,
+            **self.resolved_levels,
         }
 
 
@@ -303,6 +307,14 @@ class AnchorResolver:
             else:
                 result.failed[name] = f"No Pathway node matched '{name}'"
 
+        for name in anchors.levels:
+            cands = self._fetch_level_candidates(name)
+            if cands:
+                all_candidates[name] = cands
+                mention_to_type[name] = "level"
+            else:
+                result.failed[name] = f"No Level matched '{name}'"
+
         if not all_candidates:
             log.warning(
                 "anchor_resolver | zero candidates generated | anchors=%s", anchors
@@ -359,6 +371,14 @@ class AnchorResolver:
                 result.resolved_pathway_nodes[mention] = node_ids
                 log.info(
                     "anchor_resolver | pathway resolved | '%s' → %s%s",
+                    mention,
+                    node_ids,
+                    " (tied)" if tied else "",
+                )
+            elif anchor_type == "level":
+                result.resolved_levels[mention] = node_ids
+                log.info(
+                    "anchor_resolver | level resolved | '%s' → %s%s",
                     mention,
                     node_ids,
                     " (tied)" if tied else "",
@@ -598,7 +618,7 @@ class AnchorResolver:
         rows = self.db.query(
             """
             CALL db.index.fulltext.queryNodes("physical_pathway_name", $name_query) YIELD node AS p, score
-            MATCH (p)-[:BELONGS_TO]->(s:Station)
+            MATCH (s:Station)-[:CONTAINS]->(p)
             WHERE s.id STARTS WITH $station_code
             RETURN p.id AS id, elementId(p) AS element_id
             ORDER BY score DESC
@@ -622,6 +642,49 @@ class AnchorResolver:
                 score=1.0,
                 element_id=row["element_id"],
                 anchor_type="pathway_node",
+            )
+            for row in rows
+        ]
+
+    # ── Level candidate generation ────────────────────────────────────────────
+
+    def _fetch_level_candidates(self, name: str) -> list[Candidate]:
+        """
+        Full-text index lookup for Level nodes by level_name.
+
+        level_name carries human-readable floor descriptions from levels.txt
+        (e.g. 'Street Level', 'Mezzanine', 'Platform Level'). The full-text
+        index physical_level_name is used for fuzzy matching.
+
+        level_id is used as node_id because it is the primary key on Level
+        nodes and the field used in ON_LEVEL / STARTING_LEVEL / ENDING_LEVEL
+        relationship Cypher. The hop expander uses node_id as the Neo4j lookup
+        key — level_id is correct here.
+        """
+        clean_name = _escape_lucene(name)
+        rows = self.db.query(
+            """
+            CALL db.index.fulltext.queryNodes("physical_level_name", $query) YIELD node, score
+            RETURN node.level_id   AS level_id,
+                   node.level_name AS level_name,
+                   score,
+                   elementId(node) AS element_id
+            ORDER BY score DESC
+            LIMIT $k
+            """,
+            {"query": f"*{clean_name}*", "k": self._k},
+        )
+
+        if not rows:
+            log.warning("anchor_resolver | level not found | name=%s", name)
+
+        return [
+            Candidate(
+                node_id=row["level_id"],
+                display_name=row["level_name"],
+                score=row["score"],
+                element_id=row["element_id"],
+                anchor_type="level",
             )
             for row in rows
         ]

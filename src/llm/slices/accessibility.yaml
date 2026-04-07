@@ -39,23 +39,28 @@ nodes:
 
 # ── Relationship triples ──────────────────────────────────────────────────────
 relationships:
-  - { from: "Pathway",              type: "BELONGS_TO",   to: "Station"       }
-  - { from: "Pathway",              type: "ON_LEVEL",     to: "Level"         }
-  - { from: "OutageEvent",          type: "AFFECTS",      to: "Pathway"       }
-  - { from: "Interruption",         type: "AFFECTS_STOP", to: "Station"       }
-  - { from: "Interruption",         type: "ON_DATE",      to: "Date"          }
-  - { from: "Level",                type: "WITHIN",       to: "Station"       }
+  - { from: "Station",              type: "CONTAINS",         to: "Pathway"   }
+  - { from: "OutageEvent",          type: "AFFECTS",          to: "Pathway"   }
+  - { from: "Interruption",         type: "AFFECTS_STOP",     to: "Station"   }
+  - { from: "Interruption",         type: "ON_DATE",          to: "Date"      }
+  - { from: "Pathway",              type: "ON_LEVEL",         to: "Level"     }
+  - { from: "Pathway",              type: "STARTING_LEVEL",   to: "Level"     }
+  - { from: "Pathway",              type: "ENDING_LEVEL",     to: "Level"     }
 
 # ── Traversal patterns ────────────────────────────────────────────────────────
 # Minimum 3-hop expansion required for accessibility queries.
 patterns:
-  - "(:Station)<-[:BELONGS_TO]-(:Pathway:Elevator)<-[:AFFECTS]-(:OutageEvent)"
+  - "(:Station)-[:CONTAINS]->(:Pathway:Elevator)<-[:AFFECTS]-(:OutageEvent)"
   - "(:Station)<-[:AFFECTS_STOP]-(:Interruption:Accessibility)-[:ON_DATE]->(:Date)"
+  - "(:Station)-[:CONTAINS]->(:Pathway:Elevator)-[:ON_LEVEL]->(:Level)"
+  - "(:Station)-[:CONTAINS]->(:Pathway:Escalator)-[:STARTING_LEVEL]->(:Level)"
 
 # ── WMATA-specific warnings ───────────────────────────────────────────────────
 warnings:
   - "Prefer multi-label (:Pathway:Elevator, :Pathway:Escalator) over node_type property for filtering — multi-label is indexed"
   - "OutageEvent identity key is composite: unit_name + date_out_of_service — do not filter on unit_name alone"
   - "OutageEvent (WMATA Incidents API) and Interruption:Accessibility (GTFS-RT) are separate node types from separate sources — they are not linked in the current schema"
-  - ":Pathway is the old label for :Pathway — do not use :Pathway in queries, it no longer exists"
   - "level_index on :Level: 0=street level, negative=underground, positive=above ground"
+  - "Elevators carry ON_LEVEL to every Level in their traversed range (range derivation) — an elevator between L0 and L2 will have ON_LEVEL to L0, L1, and L2"
+  - "Escalators carry STARTING_LEVEL (from_stop) and ENDING_LEVEL (to_stop) — direction of travel is encoded in the relationship type, not a property"
+  - "Use level_name on :Level for human-readable floor descriptions; use level_index for numeric comparisons (e.g. underground = negative index)"
