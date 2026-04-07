@@ -40,7 +40,7 @@ log = get_logger(__name__)
 # Resolve Cypher query files relative to repo root
 _QUERY_DIR = Path(__file__).parents[3] / "queries" / "service_schedule"
 
-SCHEDULED_AT_BATCH_SIZE = 5_000
+SCHEDULED_AT_BATCH_SIZE = 50_000
 
 
 # ── Cypher helpers ───────────────────────────────────────────────────────────
