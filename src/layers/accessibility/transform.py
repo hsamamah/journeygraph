@@ -99,12 +99,9 @@ def _parse_epoch_ms(series: pd.Series) -> pd.Series:
     """
     cleaned = series.replace("UNKNOWN", pd.NA)
     parsed = pd.to_datetime(cleaned, errors="coerce", utc=True)
-    # Use .dt accessor to convert tz-aware Series to epoch ms.
-    # .values on a tz-aware Series returns an object array of Timestamps/NaT,
-    # making the subsequent .astype("datetime64[ms]") version-dependent.
-    # astype("datetime64[ms, UTC]") followed by view("int64") is the
-    # documented pandas path and works correctly on both 1.x and 2.x.
-    ms_series = parsed.astype("datetime64[ms, UTC]").view("int64")
+    # Epoch subtraction is the version-safe path for tz-aware Series:
+    # .view() and .dt.asi8 are unavailable on DatetimeTZDtype in pandas 3.x.
+    ms_series = (parsed - pd.Timestamp("1970-01-01", tz="UTC")) // pd.Timedelta("1ms")
     return ms_series.where(parsed.notna(), other=pd.NA).astype("Int64")
 
 
