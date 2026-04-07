@@ -26,14 +26,15 @@ from typing import Literal, NamedTuple
 import pandas as pd
 
 from src.common.logger import get_logger
-from src.layers.accessibility.pathway_joiner import (
-    _SEGMENT_KEYWORDS,
-    _ELV_TOKENS,
-    _ESC_TOKEN,
-    _COMPLEX_STATION_CODES,
-    _tier1_match as _tier1_ft,
-    _build_ft_query,
-)
+
+# Strategy A replicates the old zone+BT/TP baseline — these constants are local
+# to avoid importing removed symbols from pathway_joiner.
+_SEGMENT_KEYWORDS: dict[str, str] = {
+    "street": "_BT",
+    "mezzanine": "_BT",
+    "platform": "_TP",
+    "concourse": "_TP",
+}
 
 log = get_logger(__name__)
 
@@ -502,13 +503,11 @@ def _strategy_f(outage: pd.Series, candidates: pd.DataFrame) -> MatchOutcome:
     if len(station_c) == 1:
         return MatchOutcome(station_c.iloc[0]["pathway_id"], "matched")
 
-    # ── F7: final tiebreaker — mirror Strategy D's aggressive last resort ─────
-    # Narrow by description (GTFS-expanded), then pick lowest-seq _BT endpoint.
-    # Only fires when seq produced no matches (seq_c empty).
-    if seq_c.empty:
-        pool = station_c
-        if wmata_key:
-            pool = _desc_filter_extended(pool, wmata_key)
+    # ── F7: final tiebreaker — description-filtered pool, lowest-seq BT ──────
+    # Only fires when seq produced no candidates AND wmata_key exists to narrow
+    # the pool. Without wmata_key the pool would be unnarrowed station_c.
+    if seq_c.empty and wmata_key:
+        pool = _desc_filter_extended(station_c, wmata_key)
         if not pool.empty:
             bt_pool = pool[pool["from_stop_id"].fillna("").str.endswith("_BT")]
             if not bt_pool.empty:
@@ -539,34 +538,54 @@ def _desc_filter_extended(df: pd.DataFrame, key: str | None) -> pd.DataFrame:
 
 
 def _extract_seq_from_unit(unit_name: str) -> int | None:
-    """Extract the 2-digit numeric suffix from a WMATA unit_name."""
+    """Extract the 2-digit numeric suffix from a WMATA unit_name.
+
+    Returns None for sequence 00 — treated as absent, since GTFS stop_ids
+    do not use ELE0/ESC0 suffixes and seq 0 would produce false matches.
+    """
     if len(unit_name) < 6:
         return None
     try:
-        return int(unit_name[4:6].lstrip("0") or "0")
+        seq = int(unit_name[4:6].lstrip("0") or "0")
+        return seq if seq != 0 else None
     except ValueError:
         return None
 
 
-# ── Strategy E — full-text index tier 1 (live Neo4j) ─────────────────────────
+# ── Strategy E — legacy full-text index approach (historical baseline) ────────
+#
+# Self-contained implementation of the old full-text index tier-1.
+# Kept for comparison against the cascade (Strategy F).
+# Requires a live Neo4j connection; _candidates is ignored.
+
+_FT_BETWEEN_RE = re.compile(r"between\s+(.+?)$", re.IGNORECASE)
+
+
+def _build_ft_query(location_desc: str) -> str | None:
+    """Build Lucene AND query from 'between X and Y' phrase."""
+    desc_norm = re.sub(r"\s+", " ", location_desc.strip().lower())
+    m = _FT_BETWEEN_RE.search(desc_norm)
+    if not m:
+        return None
+    phrase = m.group(1)
+    nouns = [w for w in re.split(r"\s+and\s+|\s+", phrase) if w]
+    if not nouns:
+        return None
+    return " AND ".join(f'"{w}"' for w in nouns)
+
 
 def _strategy_e(outage: pd.Series, _candidates: pd.DataFrame, neo4j) -> MatchOutcome:
-    """
-    Calls the production _tier1_match (full-text index) directly.
-    Requires a live Neo4j connection; _candidates is ignored.
-    """
-    pathway_id = _tier1_ft(outage, neo4j)
-    if pathway_id:
-        return MatchOutcome(pathway_id, "matched")
-    # Distinguish zero-result (unmatched) from score-tie (ambiguous) via ft query
-    ft_query = _build_ft_query(str(outage.get("location_description", "")))
-    if not ft_query:
-        return MatchOutcome(None, "unmatched")
-    # Re-run to check whether there were candidates at all
+    """Full-text index join (old tier-1 approach). Requires a live Neo4j connection."""
     station_code  = outage.get("station_code", "")
     unit_type     = str(outage.get("unit_type", "")).upper()
+    location_desc = str(outage.get("location_description", ""))
     mode          = 4 if unit_type == "ESCALATOR" else 5
     station_token = f"NODE_{station_code}_"
+
+    ft_query = _build_ft_query(location_desc)
+    if not ft_query:
+        return MatchOutcome(None, "unmatched")
+
     rows = neo4j.query(
         """
         CALL db.index.fulltext.queryNodes('physical_pathway_stop_desc', $ft_query)
@@ -581,6 +600,11 @@ def _strategy_e(outage: pd.Series, _candidates: pd.DataFrame, neo4j) -> MatchOut
     )
     if not rows:
         return MatchOutcome(None, "unmatched")
+    if len(rows) == 1:
+        return MatchOutcome(rows[0]["pathway_id"], "matched")
+    top, second = rows[0]["score"], rows[1]["score"]
+    if second == 0 or top / second >= 1.5:
+        return MatchOutcome(rows[0]["pathway_id"], "matched")
     return MatchOutcome(None, "ambiguous")
 
 

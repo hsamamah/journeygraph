@@ -153,42 +153,30 @@ def _resolve_stale_outages(neo4j: Neo4jManager, poll_timestamp: str) -> None:
                            occurred between last_seen_poll and resolved_at)
       actual_duration_days = floor((resolved_at_epoch - date_out_of_service_epoch) / ms_per_day)
     """
-    with neo4j.driver.session() as session:
-        record = session.run(
-            """
-            MATCH (o:OutageEvent {status: 'active'})
-            WHERE datetime(o.last_seen_poll) < datetime($poll_timestamp)
-            RETURN count(o) AS n
-            """,
-            poll_timestamp=poll_timestamp,
-        ).single()
-        n = record["n"] if record else 0
-
+    rows = neo4j.query(
+        """
+        MATCH (o:OutageEvent {status: 'active'})
+        WHERE datetime(o.last_seen_poll) < datetime($poll_timestamp)
+        SET o.status               = 'resolved',
+            o.resolved_at          = $poll_timestamp,
+            o.actual_duration_days = CASE
+              WHEN o.date_out_of_service IS NOT NULL
+              THEN toInteger(
+                (datetime($poll_timestamp).epochMillis - o.date_out_of_service)
+                / $ms_per_day
+              )
+              ELSE null
+            END
+        RETURN count(o) AS n
+        """,
+        {"poll_timestamp": poll_timestamp, "ms_per_day": _MS_PER_DAY},
+    )
+    n = rows[0]["n"] if rows else 0
     if n > 0:
         log.info(
-            "accessibility load: resolving %d stale OutageEvent(s) "
+            "accessibility load: resolved %d stale OutageEvent(s) "
             "(last_seen_poll < current poll)",
             n,
-        )
-        neo4j.execute_write(
-            """
-            MATCH (o:OutageEvent {status: 'active'})
-            WHERE datetime(o.last_seen_poll) < datetime($poll_timestamp)
-            SET o.status               = 'resolved',
-                o.resolved_at          = $poll_timestamp,
-                o.actual_duration_days = CASE
-                  WHEN o.date_out_of_service IS NOT NULL
-                  THEN toInteger(
-                    (datetime($poll_timestamp).epochMillis - o.date_out_of_service)
-                    / $ms_per_day
-                  )
-                  ELSE null
-                END
-            """,
-            parameters={
-                "poll_timestamp": poll_timestamp,
-                "ms_per_day": _MS_PER_DAY,
-            },
         )
     else:
         log.info("accessibility load: no stale outages to resolve")

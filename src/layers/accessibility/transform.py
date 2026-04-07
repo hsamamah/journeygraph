@@ -99,18 +99,13 @@ def _parse_epoch_ms(series: pd.Series) -> pd.Series:
     """
     cleaned = series.replace("UNKNOWN", pd.NA)
     parsed = pd.to_datetime(cleaned, errors="coerce", utc=True)
-    # Convert to epoch milliseconds via pandas-version-agnostic path.
-    # In pandas 2.x+, datetime64 defaults to microsecond resolution (us).
-    # Casting to int64 gives microseconds; dividing by 1_000 yields ms.
-    # Earlier pandas used nanoseconds (astype int64 → ns ÷ 1_000_000 → ms).
-    # Using .dt.floor("ms").astype("int64") normalises to ms-precision ints
-    # regardless of the underlying resolution.
-    # Cast to datetime64[ms] before viewing as int64.
-    # This produces milliseconds-since-epoch regardless of whether pandas stores
-    # timestamps internally as datetime64[ns] (pandas <2) or datetime64[us] (2.x+).
-    ms_array = parsed.values.astype("datetime64[ms]").astype("int64")
-    epoch_ms = pd.Series(ms_array, index=series.index).where(parsed.notna(), other=pd.NA)
-    return epoch_ms.astype("Int64")
+    # Use .dt accessor to convert tz-aware Series to epoch ms.
+    # .values on a tz-aware Series returns an object array of Timestamps/NaT,
+    # making the subsequent .astype("datetime64[ms]") version-dependent.
+    # astype("datetime64[ms, UTC]") followed by view("int64") is the
+    # documented pandas path and works correctly on both 1.x and 2.x.
+    ms_series = parsed.astype("datetime64[ms, UTC]").view("int64")
+    return ms_series.where(parsed.notna(), other=pd.NA).astype("Int64")
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────

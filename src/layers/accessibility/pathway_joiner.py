@@ -408,11 +408,17 @@ def _desc_filter_extended(df: pd.DataFrame, key: str | None) -> pd.DataFrame:
 
 
 def _extract_seq_from_unit(unit_name: str) -> int | None:
-    """Extract the 2-digit numeric suffix from a WMATA unit_name (e.g. A08N03 → 3)."""
+    """Extract the 2-digit numeric suffix from a WMATA unit_name (e.g. A08N03 → 3).
+
+    Returns None for sequence 00 — treated as absent rather than 0, since
+    GTFS stop_ids do not use ELE0/ESC0 suffixes and a seq of 0 would produce
+    false matches at any station with no sequence-0 pathway.
+    """
     if len(unit_name) < 6:
         return None
     try:
-        return int(unit_name[4:6].lstrip("0") or "0")
+        seq = int(unit_name[4:6].lstrip("0") or "0")
+        return seq if seq != 0 else None
     except ValueError:
         return None
 
@@ -486,6 +492,11 @@ def _tier1_match(outage: pd.Series, candidates: pd.DataFrame) -> str | None:
             pool = bt if not bt.empty else seq_c
             if pool["from_seq"].notna().any():
                 pool = pool.sort_values("from_seq")
+            log.warning(
+                "pathway_joiner: F4 blind tiebreak for %s — %d seq candidates, "
+                "no desc match; picking %s. Add to _STATIC_LOOKUP if wrong.",
+                unit_name, len(seq_c), pool.iloc[0]["pathway_id"],
+            )
             return pool.iloc[0]["pathway_id"]
 
     # ── F5: synonym-expanded description → seq or BT tiebreak ────────────────
@@ -508,10 +519,11 @@ def _tier1_match(outage: pd.Series, candidates: pd.DataFrame) -> str | None:
         return station_c.iloc[0]["pathway_id"]
 
     # ── F7: final tiebreaker — description-filtered pool, lowest-seq BT ──────
-    if seq_c.empty:
-        pool = station_c
-        if wmata_key:
-            pool = _desc_filter_extended(pool, wmata_key)
+    # Only fires when seq produced no candidates AND a description key exists
+    # to narrow the pool. Without wmata_key the pool would be the full
+    # station_c (potentially dozens of pathways) with no evidence for any pick.
+    if seq_c.empty and wmata_key:
+        pool = _desc_filter_extended(station_c, wmata_key)
         if not pool.empty:
             bt_pool = pool[pool["from_stop_id"].fillna("").str.endswith("_BT")]
             if not bt_pool.empty:

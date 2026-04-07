@@ -418,7 +418,7 @@ class AnchorResolver:
             ORDER BY score DESC, degree DESC
             LIMIT $k
             """,
-            {"query": f"*{clean_name}*", "k": self._k},
+            {"query": f"{clean_name}*", "k": self._k},
         )
 
         if not rows:
@@ -624,7 +624,7 @@ class AnchorResolver:
             ORDER BY score DESC
             LIMIT $k
             """,
-            {"name_query": f"*{clean_name}*", "station_code": station_code, "k": self._k},
+            {"name_query": f"{clean_name}*", "station_code": station_code, "k": self._k},
         )
 
         if not rows:
