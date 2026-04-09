@@ -55,15 +55,11 @@ uv sync --extra llm
 # Single query
 uv run python -m src.llm.run "how many trips were cancelled on the red line yesterday"
 
-# Full decision trace
-uv run python -m src.llm.run "is the elevator at Metro Center out of service" --verbose
-
 # Smoke test — all three domains + one rejection, strict mode
 uv run python -m src.llm.run --demo
 
 # Interactive loop
 uv run python -m src.llm.run --repl
-uv run python -m src.llm.run --repl --verbose
 
 # Hard-fail on any schema validation warning
 uv run python -m src.llm.run "..." --strict
@@ -72,12 +68,12 @@ uv run python -m src.llm.run "..." --strict
 uv run python -m src.llm.run "..." --candidate-limit 5
 
 # Use coherence-based disambiguation strategy
-uv run python -m src.llm.run "..." --candidate-limit 5 --strategy TypeWeightedCoherenceStrategy
+uv run python -m src.llm.run "..." --candidate-limit 5 --strategy coherence
 ```
 
 **`--candidate-limit`** — number of candidates fetched per anchor mention from the full-text index. `1` = baseline, no disambiguation. Values above `1` enable graph-assisted disambiguation via `--strategy`.
 
-**`--strategy`** — disambiguation strategy to use when `--candidate-limit > 1`. Default: `TopKStrategy`. Alternative: `TypeWeightedCoherenceStrategy` (scores candidates by typed-relationship coherence across all anchor types in the query).
+**`--strategy`** — disambiguation strategy to use when `--candidate-limit > 1`. Choices: `topk` (default, takes the highest-scoring candidate) or `coherence` (`TypeWeightedCoherenceStrategy` — scores candidates by typed-relationship coherence across all anchor types in the query).
 
 ---
 
@@ -220,7 +216,7 @@ Moving to **agentic graph RAG** means replacing the linear DAG with a loop where
 | Single upfront path commitment | Can't try text2cypher, observe failure, then fall back to subgraph |
 | No multi-domain queries | "Which stations have both elevator outages AND cancelled trips?" is classified into one domain and loses the other half |
 | Predetermined hop topology | `EXPANSION_CONFIG` hard-codes which relationship types to follow per domain — the expander can't adapt to what it finds mid-traversal |
-| No self-correction | If Cypher validation fails, there's no mechanism to reason about *why* and fix just the offending clause |
+| ~~No self-correction~~ | Implemented: 3-attempt retry loop feeds validator errors back to `QueryWriter` as targeted correction hints (`refinement_errors`) |
 | Stateless across turns | No memory of previous results that could seed a follow-up query |
 
 ### Proposed agentic architecture
@@ -262,8 +258,8 @@ Every component is already structured as a callable with a clean input/output co
 
 | Approach | LLM calls per query | Latency |
 |---|---|---|
-| Current static pipeline | 2–4 | ~5–10s |
-| Level 1: retry loop only | 2–7 | ~8–15s |
+| Current pipeline (with retry loop) | 2–7 | ~5–15s |
+| Level 2: path fallback (text2cypher → subgraph on zero rows) | 2–8 | ~8–20s |
 | Level 3: full agent loop | 4–12 | ~15–40s |
 
 The agent loop is best suited for the REPL and async contexts. The `--demo` batch mode should keep the static pipeline as a fast-path option.
