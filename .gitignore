@@ -24,6 +24,7 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+tests/eval/results/
 
 # ── Tooling caches ────────────────────────────────────────────────────────────
 .ruff_cache/
