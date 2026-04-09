@@ -20,7 +20,7 @@ def cypher_validator(cypher, schema_slice, property_registry, neo4j_driver):
         return ValidationResult(valid=False, errors=errors)
 
     allowed_labels = set(property_registry.get('labels', []))
-    used_labels = set(re.findall(r':([A-Za-z0-9_]+)', cypher))
+    used_labels = set(re.findall(r'(?<!\[):([A-Za-z0-9_]+)', cypher))
     for label in used_labels:
         if label not in allowed_labels:
             errors.append(f"Label '{label}' not in whitelist for schema slice '{schema_slice}'")
