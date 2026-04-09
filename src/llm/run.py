@@ -53,6 +53,7 @@ from neo4j.exceptions import Neo4jError
 from src.common.config import LLMConfig, get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
+from src.common.paths import LOG_DIR
 from src.llm.anchor_clarifier import AnchorClarifier
 from src.llm.anchor_resolver import AnchorResolver
 from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
@@ -652,6 +653,11 @@ def main(argv: list[str] | None = None) -> None:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     )
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _fh = logging.FileHandler(LOG_DIR / "llm_run.log", encoding="utf-8")
+    _fh.setLevel(logging.INFO)
+    _fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+    logging.getLogger().addHandler(_fh)
 
     args = _parse_args(argv)
     strict = args.strict or args.demo

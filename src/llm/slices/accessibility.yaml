@@ -33,27 +33,33 @@ nodes:
   - ":Pathway:Escalator"
   - ":Station"
   - ":OutageEvent"
-  - ":Interruption:Accessibility"
   - ":Date"
   - ":Level"
+  # NOTE: :Interruption:Accessibility is intentionally excluded from this
+  # whitelist. The label is valid schema (created from GTFS-RT ServiceAlerts
+  # with effect=ACCESSIBILITY_ISSUE) but no such alerts exist in the current
+  # live feed, so the label is never present in the graph. Re-add when
+  # WMATA begins publishing ACCESSIBILITY_ISSUE alerts.
 
 # ── Relationship triples ──────────────────────────────────────────────────────
 relationships:
   - { from: "Station",              type: "CONTAINS",         to: "Pathway"   }
   - { from: "OutageEvent",          type: "AFFECTS",          to: "Pathway"   }
-  - { from: "Interruption",         type: "AFFECTS_STOP",     to: "Station"   }
-  - { from: "Interruption",         type: "ON_DATE",          to: "Date"      }
   - { from: "Pathway",              type: "ON_LEVEL",         to: "Level"     }
   - { from: "Pathway",              type: "STARTING_LEVEL",   to: "Level"     }
   - { from: "Pathway",              type: "ENDING_LEVEL",     to: "Level"     }
+  # NOTE: Interruption -[:AFFECTS_STOP]-> Station and -[:ON_DATE]-> Date are
+  # excluded — they depend on :Interruption:Accessibility which is absent from
+  # the live graph. Re-add alongside the node label when data is available.
 
 # ── Traversal patterns ────────────────────────────────────────────────────────
 # Minimum 3-hop expansion required for accessibility queries.
 patterns:
   - "(:Station)-[:CONTAINS]->(:Pathway:Elevator)<-[:AFFECTS]-(:OutageEvent)"
-  - "(:Station)<-[:AFFECTS_STOP]-(:Interruption:Accessibility)-[:ON_DATE]->(:Date)"
   - "(:Station)-[:CONTAINS]->(:Pathway:Elevator)-[:ON_LEVEL]->(:Level)"
   - "(:Station)-[:CONTAINS]->(:Pathway:Escalator)-[:STARTING_LEVEL]->(:Level)"
+  # NOTE: (:Station)<-[:AFFECTS_STOP]-(:Interruption:Accessibility)-[:ON_DATE]->(:Date)
+  # excluded — depends on absent live data. Re-add when data is available.
 
 # ── WMATA-specific warnings ───────────────────────────────────────────────────
 warnings:

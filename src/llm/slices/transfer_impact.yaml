@@ -18,7 +18,11 @@ domain: transfer_impact
 # Exact label strings the LLM may reference. Multi-labels use colon notation.
 # Acts as a whitelist for Cypher Validator check 2 (future branch).
 nodes:
-  - ":Interruption:Cancellation"
+  # NOTE: :Interruption:Cancellation is absent from the live graph — no
+  # CANCELED TripUpdates have been ingested yet. Re-add when cancellation
+  # data flows through the interruption layer.
+  # - ":Interruption:Cancellation"
+  - ":Interruption:Skip"
   - ":Trip"
   - ":Route"
   - ":Route:Rail"
@@ -36,7 +40,9 @@ relationships:
   - { from: "Date",         type: "ON_DATE",       to: "Interruption"  }
   - { from: "Interruption", type: "AFFECTS_TRIP",  to: "Trip"          }
   - { from: "Interruption", type: "AFFECTS_ROUTE", to: "Route"         }
-  - { from: "Interruption", type: "AFFECTS_STOP",  to: "Station"       }
+  # NOTE: AFFECTS_STOP absent from live graph — re-add when stop-level
+  # interruption linking is active.
+  # - { from: "Interruption", type: "AFFECTS_STOP",  to: "Station"       }
   - { from: "Trip",         type: "SCHEDULED_AT",  to: "Platform"      }
   - { from: "Trip",         type: "FOLLOWS",       to: "RoutePattern"  }
   - { from: "RoutePattern", type: "BELONGS_TO",    to: "Route"         }

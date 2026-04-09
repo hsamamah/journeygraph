@@ -38,8 +38,11 @@ nodes:
 
 # ── Relationship triples ──────────────────────────────────────────────────────
 relationships:
-  - { from: "Interruption",    type: "AFFECTS_STOP",    to: "Platform"      }
-  - { from: "Interruption",    type: "AFFECTS_STOP",    to: "BusStop"       }
+  # NOTE: AFFECTS_STOP is absent from the live graph — the relationship type
+  # exists in the schema but no Interruption nodes have been linked to stops
+  # via this path yet. Re-add when stop-level delay linking is active.
+  # - { from: "Interruption",    type: "AFFECTS_STOP",    to: "Platform"      }
+  # - { from: "Interruption",    type: "AFFECTS_STOP",    to: "BusStop"       }
   - { from: "Interruption",    type: "AFFECTS_ROUTE",   to: "Route"         }
   - { from: "Interruption",    type: "AFFECTS_TRIP",    to: "Trip"          }
   - { from: "Interruption",    type: "ON_DATE",         to: "Date"          }
@@ -56,7 +59,10 @@ relationships:
 
 # ── Traversal patterns ────────────────────────────────────────────────────────
 patterns:
-  - "(:Interruption:Delay)-[:AFFECTS_STOP]->(:Platform)<-[:SCHEDULED_AT]-(:Trip)"
+  # NOTE: AFFECTS_STOP pattern excluded — relationship absent from live graph.
+  # - "(:Interruption:Delay)-[:AFFECTS_STOP]->(:Platform)<-[:SCHEDULED_AT]-(:Trip)"
+  - "(:Interruption:Delay)-[:AFFECTS_ROUTE]->(:Route)"
+  - "(:Interruption:Delay)-[:AFFECTS_TRIP]->(:Trip)-[:FOLLOWS]->(:RoutePattern)-[:BELONGS_TO]->(:Route)"
   - "(:Interruption:Delay)-[:SOURCED_FROM]->(:TripUpdate)-[:HAS_STOP_UPDATE]->(:StopTimeUpdate)-[:AT_STOP]->(:Platform)"
 
 # ── WMATA-specific warnings ───────────────────────────────────────────────────
