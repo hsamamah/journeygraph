@@ -27,6 +27,7 @@ from src.common.config import LLMConfig
 from src.llm.cypher_validator import ValidationResult, cypher_validator, validate_and_log_cypher
 from src.llm.planner_output import PlannerAnchors
 from src.llm.query_writer import QueryWriter, QueryWriterInput, QueryWriterOutput
+from src.llm.slice_registry import RelationshipTriple, SchemaSlice
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -183,80 +184,105 @@ def _make_driver(explain_ok: bool = True) -> MagicMock:
     return driver
 
 
-def _make_property_registry(
+def _make_slice(
+    domain: str = "test",
     labels: list[str] | None = None,
-    relationships: list[str] | None = None,
-    properties: list[str] | None = None,
-) -> dict:
-    return {
-        "labels": labels or [],
-        "relationships": relationships or [],
-        "properties": properties or [],
-    }
+    relationships: list[tuple[str, str, str]] | None = None,
+    properties: dict[str, list[str]] | None = None,
+) -> tuple[SchemaSlice, dict[str, list[str]]]:
+    """Return (SchemaSlice, property_registry) matching production call convention."""
+    rels = [
+        RelationshipTriple(from_label=f, rel_type=t, to_label=to)
+        for f, t, to in (relationships or [])
+    ]
+    prop_registry: dict[str, list[str]] = properties or {}
+    slice_obj = SchemaSlice(
+        domain=domain,
+        nodes=labels or [],
+        relationships=rels,
+        patterns=[],
+        warnings=[],
+        property_registry=prop_registry,
+    )
+    return slice_obj, prop_registry
 
 
 def test_cypher_validator_valid_query_returns_success() -> None:
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(
-        labels=["Station"], relationships=["CONNECTS_TO"], properties=["name"]
+    slice_obj, prop_reg = _make_slice(
+        labels=["Station"],
+        relationships=[("Station", "CONNECTS_TO", "Station")],
+        properties={"Station": ["name"]},
     )
     cypher = "MATCH (s:Station)-[:CONNECTS_TO]->(t:Station) RETURN s.name"
-    result = cypher_validator(cypher, "accessibility", registry, driver)
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
     assert result.valid is True
     assert result.errors == []
 
 
 def test_cypher_validator_syntax_error_returns_invalid() -> None:
     driver = _make_driver(explain_ok=False)
-    registry = _make_property_registry()
-    result = cypher_validator("NOT VALID CYPHER @@", "accessibility", registry, driver)
+    slice_obj, prop_reg = _make_slice()
+    result = cypher_validator("NOT VALID CYPHER @@", slice_obj, prop_reg, driver)
     assert result.valid is False
     assert any("Syntax error" in e for e in result.errors)
 
 
 def test_cypher_validator_unknown_label_flagged() -> None:
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(labels=["Station"])
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
     cypher = "MATCH (n:ServiceAlert) RETURN n"
-    result = cypher_validator(cypher, "accessibility", registry, driver)
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
     assert result.valid is False
     assert any("ServiceAlert" in e for e in result.errors)
 
 
 def test_cypher_validator_known_label_not_flagged() -> None:
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(labels=["Station"])
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
     cypher = "MATCH (n:Station) RETURN n"
-    result = cypher_validator(cypher, "accessibility", registry, driver)
-    # No label errors; other whitelist errors may exist but no label ones
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
     assert not any("Station" in e and "whitelist" in e for e in result.errors)
 
 
 def test_cypher_validator_directed_relationship_detected() -> None:
     """Directed rels (-[:REL]->) must be caught by the whitelist check."""
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(labels=["Station"], relationships=[])
+    slice_obj, prop_reg = _make_slice(labels=["Station"], relationships=[])
     cypher = "MATCH (a:Station)-[:CONNECTS_TO]->(b:Station) RETURN a"
-    result = cypher_validator(cypher, "accessibility", registry, driver)
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
     assert any("CONNECTS_TO" in e for e in result.errors)
 
 
 def test_cypher_validator_directed_relationship_whitelisted_passes() -> None:
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(
-        labels=["Station"], relationships=["CONNECTS_TO"]
+    slice_obj, prop_reg = _make_slice(
+        labels=["Station"],
+        relationships=[("Station", "CONNECTS_TO", "Station")],
     )
     cypher = "MATCH (a:Station)-[:CONNECTS_TO]->(b:Station) RETURN a"
-    result = cypher_validator(cypher, "accessibility", registry, driver)
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
     assert not any("CONNECTS_TO" in e for e in result.errors)
 
 
 def test_cypher_validator_unknown_property_flagged() -> None:
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(labels=["Station"], properties=["name"])
+    slice_obj, prop_reg = _make_slice(
+        labels=["Station"],
+        properties={"Station": ["name"]},
+    )
     cypher = "MATCH (n:Station) RETURN n.secret_field"
-    result = cypher_validator(cypher, "accessibility", registry, driver)
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
     assert any("secret_field" in e for e in result.errors)
+
+
+def test_cypher_validator_multilabel_node_whitelisted() -> None:
+    """Multi-label node strings like ':Interruption:Cancellation' are flattened correctly."""
+    driver = _make_driver(explain_ok=True)
+    slice_obj, prop_reg = _make_slice(labels=[":Interruption:Cancellation"])
+    cypher = "MATCH (n:Interruption) RETURN n"
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
+    assert not any("Interruption" in e and "whitelist" in e for e in result.errors)
 
 
 # ── Layer 1: validate_and_log_cypher logger integration ──────────────────────
@@ -264,20 +290,20 @@ def test_cypher_validator_unknown_property_flagged() -> None:
 
 def test_validate_and_log_cypher_calls_logger_on_failure() -> None:
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(labels=[])
+    slice_obj, prop_reg = _make_slice(labels=[])
     cypher = "MATCH (n:UnknownLabel) RETURN n"
     logger = MagicMock()
-    result = validate_and_log_cypher(cypher, "slice", registry, driver, logger)
+    result = validate_and_log_cypher(cypher, slice_obj, prop_reg, driver, logger)
     assert result.valid is False
     logger.warning.assert_called_once()
 
 
 def test_validate_and_log_cypher_no_log_on_success() -> None:
     driver = _make_driver(explain_ok=True)
-    registry = _make_property_registry(labels=["Station"])
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
     cypher = "MATCH (n:Station) RETURN n"
     logger = MagicMock()
-    validate_and_log_cypher(cypher, "slice", registry, driver, logger)
+    validate_and_log_cypher(cypher, slice_obj, prop_reg, driver, logger)
     logger.warning.assert_not_called()
 
 
