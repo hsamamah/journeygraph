@@ -56,6 +56,8 @@ from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
 from src.llm.planner import Planner
 from src.llm.slice_registry import SliceRegistry
 from src.llm.subgraph_builder import SubgraphBuilder
+from src.llm.cypher_validator import validate_and_log_cypher
+from src.llm.query_writer import run_query_writer
 
 if TYPE_CHECKING:
     from src.llm.planner_output import PlannerOutput
@@ -255,11 +257,11 @@ def _fmt_subgraph_verbose(sub: SubgraphOutput) -> str:
 
 # ── Query execution ───────────────────────────────────────────────────────────
 
-
 def _run_query(
     planner: Planner,
     db: Neo4jManager,
     query: str,
+    registry: SchemaRegistry,
     *,
     candidate_limit: int = 1,
     strategy: str = "topk",
@@ -333,39 +335,57 @@ def _run_query(
         resolver.config,
         resolutions.as_flat_dict(),
     )
+    
+    # ── Query Writer path ─────────────────────────────────────────────────────────
+    if getattr(planner_output, "path", None) in {"text2cypher", "both"}:
+        query_writer_output = run_query_writer(query, planner_output)
+        print("\n[Query Writer Output]")
+        print("Cypher Query:\n", query_writer_output.cypher_query)
+        print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
+
+        # Validate Cypher
+        schema_slice = registry.get(planner_output.schema_slice_key)
+        property_registry = schema_slice.property_registry
+        cypher_validator_result = validate_and_log_cypher(query_writer_output.cypher_query, schema_slice, schema_slice.property_registry, db.driver, log)
+        if cypher_validator_result.errors:
+            # print("Cypher Validator Errors:", cypher_validator_result.errors)
+            print("Cypher Validator Errors - see logs for details.")
+        else:
+            print("Cypher Validator: Query is valid.")
 
     # ── Subgraph path ─────────────────────────────────────────────────────────
-    sub_output: SubgraphOutput | None = None
+    # sub_output: SubgraphOutput | None = None
 
-    if planner_output.path in {"subgraph", "both"}:
-        builder = SubgraphBuilder(db=db)
-        sub_output = builder.run(
-            planner_output,
-            resolutions,
-            resolver_config=resolver.config,
-        )
-        print(_fmt_subgraph_verbose(sub_output))
+    # if planner_output.path in {"subgraph", "both"}:
+    #     builder = SubgraphBuilder(db=db)
+    #     sub_output = builder.run(
+    #         planner_output,
+    #         resolutions,
+    #         resolver_config=resolver.config,
+    #     )
+    #     print(_fmt_subgraph_verbose(sub_output))
 
-    return planner_output, sub_output
+    # return planner_output, sub_output
 
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
-
 
 def _mode_default(
     planner: Planner,
     db: Neo4jManager,
     query: str,
+    registry: SchemaRegistry,
     *,
     candidate_limit: int,
     strategy: str,
 ) -> None:
-    _run_query(planner, db, query, candidate_limit=candidate_limit, strategy=strategy)
+    _run_query(planner, db, registry, query, candidate_limit=candidate_limit, strategy=strategy)
 
 
 def _mode_demo(
     planner: Planner,
     db: Neo4jManager,
+    registry: SchemaRegistry,
     *,
     candidate_limit: int,
     strategy: str,
@@ -476,7 +496,7 @@ def _startup(*, strict: bool) -> tuple[Planner, Neo4jManager]:
     # at query time.
 
     planner = Planner(registry, llm_config, strict=strict)
-    return planner, db
+    return planner, db, registry
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -502,7 +522,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     try:
-        planner, db = _startup(strict=strict)
+        planner, db, registry = _startup(strict=strict)
     except (OSError, RuntimeError) as exc:
         log.error("Startup failed: %s", exc)
         sys.exit(1)
@@ -512,6 +532,7 @@ def main(argv: list[str] | None = None) -> None:
             _mode_demo(
                 planner,
                 db,
+                registry,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -519,6 +540,7 @@ def main(argv: list[str] | None = None) -> None:
             _mode_repl(
                 planner,
                 db,
+                registry,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -526,6 +548,7 @@ def main(argv: list[str] | None = None) -> None:
             _mode_default(
                 planner,
                 db,
+                registry,
                 args.query,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
