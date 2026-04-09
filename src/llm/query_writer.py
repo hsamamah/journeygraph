@@ -4,8 +4,11 @@ from typing import Any
 import json
 import os
 import glob
+import re
 
 import anthropic
+
+from src.llm.planner_output import PlannerAnchors
 
 @dataclass
 class QueryWriterInput:
@@ -50,7 +53,6 @@ class QueryWriter:
         return QueryWriterOutput(cypher_query=cypher_query, cot_comments=cot_comments)
 
     def _parse_llm_response(self, text: str):
-        import re
         cypher_match = re.search(r"```cypher\n(.*?)```", text, re.DOTALL)
         cypher_query = cypher_match.group(1).strip() if cypher_match else ""
         comments = text.replace(cypher_match.group(0), "").strip() if cypher_match else text

@@ -26,7 +26,7 @@ def cypher_validator(cypher, schema_slice, property_registry, neo4j_driver):
             errors.append(f"Label '{label}' not in whitelist for schema slice '{schema_slice}'")
 
     allowed_rels = set(property_registry.get('relationships', []))
-    used_rels = set(re.findall(r'-\[:([A-Za-z0-9_]+)\]-', cypher))
+    used_rels = set(re.findall(r'-\[:([A-Za-z0-9_]+)\]', cypher))
     for rel in used_rels:
         if rel not in allowed_rels:
             errors.append(f"Relationship type '{rel}' not in whitelist for schema slice '{schema_slice}'")
@@ -54,4 +54,6 @@ def cypher_validator(cypher, schema_slice, property_registry, neo4j_driver):
 
 def validate_and_log_cypher(cypher, schema_slice, property_registry, neo4j_driver, logger):
     result = cypher_validator(cypher, schema_slice, property_registry, neo4j_driver)
+    if not result.valid:
+        logger.warning("cypher_validator | validation failed | %s", result.errors)
     return result
