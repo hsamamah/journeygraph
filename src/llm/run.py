@@ -32,7 +32,8 @@ Startup sequence (same for all modes):
     3. SliceRegistry()    — validates slices against live graph
     4. Planner()          — builds LLM instance (Stage 2)
     5. NarrationAgent()   — builds LLM instance (narration)
-    6. Enter selected mode
+    6. AnchorClarifier()  — fetches station/route catalogue from graph once
+    7. Enter selected mode
 
 The SliceRegistry validation (DB-touching) always completes before any
 LLM call is made, so a misconfigured database never wastes API tokens.
@@ -52,6 +53,7 @@ from neo4j.exceptions import Neo4jError
 from src.common.config import get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
+from src.llm.anchor_clarifier import AnchorClarifier
 from src.llm.anchor_resolver import AnchorResolver
 from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
 from src.llm.narration_agent import NarrationAgent
@@ -304,6 +306,7 @@ def _run_query(
     db: Neo4jManager,
     query: str,
     *,
+    clarifier: AnchorClarifier,
     candidate_limit: int = 1,
     strategy: str = "topk",
     label: str | None = None,
@@ -311,7 +314,8 @@ def _run_query(
     """
     Execute a single query through the full pipeline.
 
-    Stages: Planner → Anchor Resolution → Subgraph path → Narration Agent.
+    Stages: Planner → Anchor Resolution → Clarification (if needed) →
+    Subgraph path → Narration Agent.
     Text2Cypher path is not yet wired (separate branch); the Narration Agent
     receives t2c_output=None and selects contextual or degraded mode.
 
@@ -324,6 +328,8 @@ def _run_query(
         narration_agent:  Initialised NarrationAgent instance.
         db:               Live Neo4jManager — held open across queries.
         query:            Raw query string.
+        clarifier:        AnchorClarifier — fires only when station/route
+                          anchors fail Lucene lookup.
         candidate_limit:  Max candidates per mention from full-text index.
                           1 = baseline, no disambiguation.
         strategy:         'topk' or 'coherence'. Ignored when
@@ -372,6 +378,12 @@ def _run_query(
         )
         print(f"\nDatabase error during anchor resolution: {exc}")
         return planner_output, None, None
+
+    # ── Anchor clarification — fires only on station/route failures ──────────────
+    # Silent repair pass: maps failed mentions to valid WMATA names via a small
+    # LLM call, then re-resolves. Skipped when no station/route failures exist.
+    if resolutions.failed:
+        resolutions = clarifier.clarify(resolutions, resolver)
 
     if resolutions.any_resolved:
         log.info(
@@ -432,6 +444,7 @@ def _mode_default(
     db: Neo4jManager,
     query: str,
     *,
+    clarifier: AnchorClarifier,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -440,6 +453,7 @@ def _mode_default(
         narration_agent,
         db,
         query,
+        clarifier=clarifier,
         candidate_limit=candidate_limit,
         strategy=strategy,
     )
@@ -450,6 +464,7 @@ def _mode_demo(
     narration_agent: NarrationAgent,
     db: Neo4jManager,
     *,
+    clarifier: AnchorClarifier,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -467,6 +482,7 @@ def _mode_demo(
             narration_agent,
             db,
             query,
+            clarifier=clarifier,
             candidate_limit=candidate_limit,
             strategy=strategy,
             label=label,
@@ -494,6 +510,7 @@ def _mode_repl(
     narration_agent: NarrationAgent,
     db: Neo4jManager,
     *,
+    clarifier: AnchorClarifier,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -523,6 +540,7 @@ def _mode_repl(
             narration_agent,
             db,
             query,
+            clarifier=clarifier,
             candidate_limit=candidate_limit,
             strategy=strategy,
         )
@@ -532,13 +550,13 @@ def _mode_repl(
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 
-def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager]:
+def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, AnchorClarifier]:
     """
     Initialise the full pipeline stack.
 
-    Returns (Planner, NarrationAgent, Neo4jManager). The Neo4j connection
-    is held open across queries for the Subgraph path and closed by main()
-    on exit via the finally block.
+    Returns (Planner, NarrationAgent, Neo4jManager, AnchorClarifier). The
+    Neo4j connection is held open across queries for the Subgraph path and
+    closed by main() on exit via the finally block.
 
     Sequencing:
       1. LLM config      — hard fail if ANTHROPIC_API_KEY missing
@@ -547,6 +565,7 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager]:
       4. Planner         — builds Planner LLM instance (LLM_MAX_TOKENS)
       5. NarrationAgent  — builds Narration LLM instance
                            (LLM_NARRATION_MAX_TOKENS)
+      6. AnchorClarifier — fetches station/route catalogue from graph once
     """
     llm_config = get_llm_config()
     log.info(
@@ -567,7 +586,8 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager]:
 
     planner = Planner(registry, llm_config, strict=strict)
     narration_agent = NarrationAgent(llm_config)
-    return planner, narration_agent, db
+    clarifier = AnchorClarifier(db, llm_config)
+    return planner, narration_agent, db, clarifier
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -593,7 +613,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     try:
-        planner, narration_agent, db = _startup(strict=strict)
+        planner, narration_agent, db, clarifier = _startup(strict=strict)
     except (OSError, RuntimeError) as exc:
         log.error("Startup failed: %s", exc)
         sys.exit(1)
@@ -604,6 +624,7 @@ def main(argv: list[str] | None = None) -> None:
                 planner,
                 narration_agent,
                 db,
+                clarifier=clarifier,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -612,6 +633,7 @@ def main(argv: list[str] | None = None) -> None:
                 planner,
                 narration_agent,
                 db,
+                clarifier=clarifier,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -621,6 +643,7 @@ def main(argv: list[str] | None = None) -> None:
                 narration_agent,
                 db,
                 args.query,
+                clarifier=clarifier,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
