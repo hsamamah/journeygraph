@@ -1,3 +1,26 @@
+# src/llm/query_writer.py
+"""
+QueryWriter — Text2Cypher LLM stage for the JourneyGraph pipeline.
+
+Receives a natural language query, resolved anchor IDs, and a SchemaSlice,
+then asks Claude to produce a single read-only Cypher query.
+
+Prompt construction (system message):
+  1. Role + output format instruction
+  2. SchemaSlice constraints (node whitelist, relationship whitelist,
+     optional schema, traversal patterns, data warnings) — injected as
+     hard constraints so the LLM cannot hallucinate schema
+  3. System conventions (conventions.json)
+  4. Few-shot examples — all *.cypher files from queries/<domain>/
+
+User message includes the raw query, the PlannerAnchors struct, and the
+resolved anchor IDs as literal values (e.g. "yesterday → '20260408'")
+with an explicit instruction to use them directly rather than $parameters.
+
+Entry point: run_query_writer(query, planner_output, llm_config,
+                              schema_slice, resolved_anchors)
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -177,9 +200,14 @@ def run_query_writer(
     doesn't exist.
 
     Args:
-        schema_slice: SchemaSlice object from SliceRegistry. When provided,
-                      its nodes, relationships, patterns, and warnings are
-                      injected into the system prompt as hard constraints.
+        schema_slice:     SchemaSlice from SliceRegistry. Nodes, relationships,
+                          patterns, and warnings are injected into the system
+                          prompt as hard constraints before the few-shot examples.
+        resolved_anchors: Output of resolutions.as_flat_dict() — maps each
+                          mention string to its resolved graph ID(s), e.g.
+                          {'yesterday': ['20260408'], 'Red Line': ['RED']}.
+                          Injected into the user message so the LLM writes
+                          literal values instead of $parameters.
     """
     with open(os.path.join("src", "llm", "conventions.json")) as f:
         conventions = json.load(f)

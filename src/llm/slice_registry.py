@@ -20,22 +20,25 @@ Validation runs once at startup using a single Neo4j connection pass
         Always raises RuntimeError on failure — a broken YAML is a
         config error that must be fixed before the pipeline can run.
 
-    Check 2 — Label validity
-        CALL db.labels() — every node label in a slice exists in the
-        live graph. Individual labels are extracted from multi-label
-        strings (":Interruption:Cancellation" → "Interruption",
-        "Cancellation"). In default mode: logs a warning. In strict
-        mode: raises RuntimeError.
+    Check 2 — Label validity (required nodes only)
+        CALL db.labels() — every label in nodes: exists in the live
+        graph. Labels in nodes_optional: are excluded — their absence
+        is expected on a fresh DB. Individual labels are extracted from
+        multi-label strings (":Interruption:Skip" → "Interruption",
+        "Skip"). In default mode: logs a warning. In strict mode:
+        raises RuntimeError.
 
-    Check 3 — Relationship type validity
-        CALL db.relationshipTypes() — every relationship type in a
-        slice exists in the live graph. Same strict/default behaviour
-        as label validity.
+    Check 3 — Relationship type validity (required relationships only)
+        CALL db.relationshipTypes() — every relationship type in
+        relationships: exists in the live graph. Relationships whose
+        from_label or to_label is in nodes_optional: are skipped
+        (auto-optional). Same strict/default behaviour as label validity.
 
 A fourth call — CALL db.schema.nodeTypeProperties() — builds the
-property registry used by the Cypher Validator in a future branch.
-The result is stored on each SchemaSlice and scoped to that slice's
-node labels.
+property registry. Properties are fanned out to every individual label
+component of composite node-type keys (Neo4j returns multi-label types
+alphabetically, e.g. "Delay:Interruption"). The result is stored on each
+SchemaSlice, scoped to that slice's required + optional labels.
 
 Strict mode:
     Pass strict=True to treat any validation warning as a hard failure.
@@ -97,19 +100,31 @@ class SchemaSlice:
     A domain-scoped schema whitelist loaded from a YAML file.
 
     Attributes:
-        domain:            Domain key matching the YAML filename stem.
-        nodes:             Label strings the LLM may use. Multi-label strings
-                           use colon notation e.g. ':Interruption:Cancellation'.
-        relationships:     Directed triples. Prevents wrong rel types and
-                           reversed arrows in generated Cypher.
-        patterns:          Pseudo-Cypher traversal templates. Injected as
-                           few-shot examples into the Query Writer prompt.
-        warnings:          WMATA-specific data quirks from CONVENTIONS.md.
-                           Injected directly into the Query Writer prompt.
-        property_registry: {label: [property_name, ...]} for labels in this
-                           slice. Populated by SliceRegistry from
-                           db.schema.nodeTypeProperties() at startup.
-                           Used by Cypher Validator check 5 (future branch).
+        domain:                 Domain key matching the YAML filename stem.
+        nodes:                  Required node label strings. Checked against
+                                db.labels() at startup — strict mode fails if
+                                any are absent. Multi-label strings use colon
+                                notation e.g. ':Interruption:Skip'.
+        relationships:          Required directed triples. Validated against
+                                db.relationshipTypes(). Auto-split at build
+                                time: any triple whose from_label or to_label
+                                is in nodes_optional is moved to
+                                relationships_optional instead.
+        patterns:               Pseudo-Cypher traversal templates. Injected
+                                into the Query Writer system prompt.
+        warnings:               WMATA-specific data quirks. Injected into the
+                                Query Writer system prompt before the LLM writes
+                                Cypher.
+        nodes_optional:         Valid schema, absent on a fresh DB (RT/API
+                                overlay nodes not yet ingested). Included in
+                                the validator whitelist; never checked against
+                                db.labels().
+        relationships_optional: Auto-derived from nodes_optional at build time.
+                                Any relationship touching an optional node is
+                                moved here. Included in the validator whitelist.
+        property_registry:      {label: [property_name, ...]} for all labels in
+                                this slice (required + optional). Built from
+                                db.schema.nodeTypeProperties() at startup.
     """
 
     domain: str

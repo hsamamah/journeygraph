@@ -66,6 +66,7 @@ def sample_input(anchors: PlannerAnchors) -> QueryWriterInput:
         user_query="is the elevator at Metro Center out of service",
         anchors=anchors,
         schema_slice="accessibility",
+        schema_slice_obj=None,
         patterns=["MATCH (e:Elevator) RETURN e"],
         conventions={"stop_id_prefixes": {"STN_": "Station"}},
     )
@@ -90,7 +91,7 @@ def test_build_system_prompt_includes_patterns(
     prompt = query_writer._build_system_prompt(
         sample_input.conventions, sample_input.patterns
     )
-    assert "Example Cypher patterns:" in prompt
+    assert "Example Cypher queries for this domain:" in prompt
     assert "MATCH (e:Elevator)" in prompt
 
 
@@ -98,7 +99,7 @@ def test_build_system_prompt_no_patterns_omits_section(
     query_writer: QueryWriter, sample_input: QueryWriterInput
 ) -> None:
     prompt = query_writer._build_system_prompt(sample_input.conventions, patterns=[])
-    assert "Example Cypher patterns:" not in prompt
+    assert "Example Cypher queries for this domain:" not in prompt
 
 
 def test_build_system_prompt_multiple_patterns_separated(
@@ -107,6 +108,37 @@ def test_build_system_prompt_multiple_patterns_separated(
     patterns = ["MATCH (a) RETURN a", "MATCH (b) RETURN b"]
     prompt = query_writer._build_system_prompt(sample_input.conventions, patterns)
     assert "---" in prompt
+
+
+# ── Layer 1: _build_system_prompt — SchemaSlice injection ────────────────────
+
+
+def test_build_system_prompt_injects_node_whitelist(query_writer: QueryWriter) -> None:
+    slice_obj, _ = _make_slice(
+        domain="accessibility",
+        labels=["Pathway", "Station"],
+        relationships=[("OutageEvent", "AFFECTS", "Pathway")],
+    )
+    prompt = query_writer._build_system_prompt({}, [], schema_slice=slice_obj)
+    assert "Allowed node labels" in prompt
+    assert "Pathway" in prompt
+    assert "Station" in prompt
+
+
+def test_build_system_prompt_injects_relationship_whitelist(query_writer: QueryWriter) -> None:
+    slice_obj, _ = _make_slice(
+        domain="accessibility",
+        relationships=[("OutageEvent", "AFFECTS", "Pathway")],
+    )
+    prompt = query_writer._build_system_prompt({}, [], schema_slice=slice_obj)
+    assert "Allowed relationship types" in prompt
+    assert "AFFECTS" in prompt
+
+
+def test_build_system_prompt_no_slice_omits_whitelist(query_writer: QueryWriter) -> None:
+    prompt = query_writer._build_system_prompt({}, [], schema_slice=None)
+    assert "Allowed node labels" not in prompt
+    assert "Allowed relationship types" not in prompt
 
 
 # ── Layer 1: _build_user_message ─────────────────────────────────────────────
@@ -133,6 +165,23 @@ def test_build_user_message_contains_anchors(
 ) -> None:
     msg = query_writer._build_user_message("query", anchors, "accessibility")
     assert "Metro Center" in msg
+
+
+def test_build_user_message_injects_resolved_ids(
+    query_writer: QueryWriter, anchors: PlannerAnchors
+) -> None:
+    resolved = {"yesterday": ["20260408"], "Metro Center": ["STN_C01_F01"]}
+    msg = query_writer._build_user_message("query", anchors, "accessibility", resolved)
+    assert "20260408" in msg
+    assert "STN_C01_F01" in msg
+    assert "do NOT use $parameters" in msg
+
+
+def test_build_user_message_no_resolved_ids_omits_block(
+    query_writer: QueryWriter, anchors: PlannerAnchors
+) -> None:
+    msg = query_writer._build_user_message("query", anchors, "accessibility", {})
+    assert "do NOT use $parameters" not in msg
 
 
 # ── Layer 1: _parse_llm_response ──────────────────────────────────────────────

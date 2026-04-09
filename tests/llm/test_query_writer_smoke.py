@@ -24,9 +24,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.common.config import LLMConfig
-from src.llm.cypher_validator import cypher_validator
+from src.llm.cypher_validator import ValidationResult, cypher_validator
 from src.llm.planner_output import PlannerAnchors, PlannerOutput
 from src.llm.query_writer import QueryWriter, QueryWriterInput, run_query_writer
+from src.llm.slice_registry import RelationshipTriple, SchemaSlice
 
 
 # ── Marker — all tests in this file require a live API key ───────────────────
@@ -120,6 +121,7 @@ def test_query_writer_returns_cypher_block(
         user_query=query,
         anchors=anchors,
         schema_slice=schema_slice_key,
+        schema_slice_obj=None,
         patterns=[],  # no few-shot — tests raw model capability
         conventions={},
     )
@@ -193,9 +195,16 @@ def test_cypher_validator_on_live_output(llm_config: LLMConfig) -> None:
         pytest.skip("LLM returned no Cypher block — cannot validate")
 
     driver = _mock_driver()
-    # Permissive registry so whitelist checks don't mask syntax errors
-    registry = {"labels": [], "relationships": [], "properties": []}
-    result = cypher_validator(output.cypher_query, "accessibility", registry, driver)
+    # Permissive slice so whitelist checks don't mask syntax errors
+    permissive_slice = SchemaSlice(
+        domain="accessibility",
+        nodes=[],
+        relationships=[],
+        patterns=[],
+        warnings=[],
+        property_registry={},
+    )
+    result = cypher_validator(output.cypher_query, permissive_slice, {}, driver)
 
     # The mock driver never raises on EXPLAIN, so we should always reach the
     # whitelist step. A ValidationResult is returned either way.

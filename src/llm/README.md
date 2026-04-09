@@ -140,7 +140,7 @@ Token budget for the narration call is controlled separately from the planner vi
 
 ## Schema Slices
 
-Each query domain maps to a YAML file in `src/llm/slices/`. A slice defines the node labels, relationship types, traversal patterns, and WMATA data quirks the LLM is permitted to reference for that domain.
+Each query domain maps to a YAML file in `src/llm/slices/`. A slice defines the exact node labels, relationship types, traversal patterns, and WMATA data quirks the LLM is permitted to reference for that domain. `SliceRegistry` validates every slice against the live graph at startup and injects it into the `QueryWriter` system prompt as hard constraints.
 
 ```
 src/llm/slices/
@@ -148,6 +148,11 @@ src/llm/slices/
     accessibility.yaml
     delay_propagation.yaml
 ```
+
+**Required vs optional schema** — node labels and relationships fall into two categories:
+
+- **`nodes:` / `relationships:`** — static structural nodes always present after base pipeline layers load (Station, Platform, Route, Trip, …). Checked against `db.labels()` / `db.relationshipTypes()` at startup; strict mode fails if any are absent.
+- **`nodes_optional:`** — RT/API overlay nodes absent on a fresh DB (Interruption:\*, TripUpdate, OutageEvent, …). Included in the validator whitelist so the LLM may reference them; never checked at startup. Any relationship whose endpoint is in `nodes_optional` is automatically treated as optional too — no `relationships_optional` entry needed in the YAML.
 
 To add a new domain: add a YAML file with the four required fields (`nodes`, `relationships`, `patterns`, `warnings`) and register the domain key in `_SLICE_KEY_MAP` in `planner.py`.
 
@@ -193,11 +198,7 @@ Text2Cypher fills a gap the subgraph path cannot: **exact scalar answers** — c
 
 ### Known gaps
 
-- **Resolved IDs not passed to QueryWriter.** The `QueryWriter` receives `PlannerAnchors` (string mentions like "Red Line") not `AnchorResolutions` (graph IDs like `route_id = "RED"`). Generated Cypher must fuzzy-match strings rather than use exact IDs. Fix: thread `AnchorResolutions` through `run_query_writer` and include resolved IDs in `_build_user_message`.
-
 - **No retry loop.** `Text2CypherOutput.attempt_count` and `ValidationError.cypher_excerpt` are designed for a 3-attempt refinement loop (the validator feeds its structured error back to the QueryWriter as a targeted hint), but the loop is not yet wired in `run.py`. Fix: wrap the `run_query_writer` + `validate_and_log_cypher` block in a `for attempt in range(3)` loop, passing `val_result.errors` as context on retry.
-
-- **Broken whitelist checks in `CypherValidator`.** The validator calls `property_registry.get('labels', [])` but `SchemaSlice.property_registry` is structured as `{label: [prop, ...]}` — there is no `'labels'` key. All whitelist checks always pass against an empty set. Fix: extract `allowed_labels` from `slice.nodes`, `allowed_rels` from `slice.relationships`, and `allowed_props` from `{p for props in property_registry.values() for p in props}`.
 
 ---
 
@@ -265,7 +266,7 @@ The agent loop is best suited for the REPL and async contexts. The `--demo` batc
 
 ### Recommended implementation path
 
-1. **Fix the three known gaps** in the current Text2Cypher path (resolved IDs, retry loop, broken whitelist) — these are prerequisites, not optional.
+1. **Fix the remaining known gap** in the Text2Cypher path (retry loop) — resolved IDs and whitelist checks are already wired.
 2. **Add a `path_fallback` mechanism** to `run.py`: if text2cypher returns zero rows and path was `text2cypher`, re-run as `subgraph`. No agent loop required — just a conditional in `_run_query`. This alone recovers the most common failure mode.
 3. **Build the tool wrappers** as a thin adapter layer over the existing components.
 4. **Wire Claude tool use** via the Anthropic SDK (`tools=[...]` in `client.messages.create`) — the `QueryWriter` already uses the SDK directly, so no new dependencies.
@@ -288,7 +289,11 @@ src/llm/
     context_serializer.py        ← Stage 3: serialization + 6,000-token budget enforcement
     subgraph_output.py           ← SubgraphOutput dataclass; make_zero_anchor_fallback()
     expansion_config.py          ← DomainExpansionConfig; EXPANSION_CONFIG per domain
-    slice_registry.py            ← Loads and validates schema slices against live graph
+    query_writer.py              ← Text2Cypher LLM call; injects SchemaSlice constraints +
+    │                               resolved anchor IDs as literals into the prompt
+    cypher_validator.py          ← EXPLAIN + node/rel/property whitelist + execution
+    slice_registry.py            ← Loads and validates schema slices against live graph;
+    │                               splits required vs optional nodes/relationships
     llm_factory.py               ← LLM provider abstraction (currently: Anthropic)
     narration_agent.py           ← Terminal stage; mode selection, prompt assembly, LLM call
     narration_output.py          ← NarrationOutput dataclass
