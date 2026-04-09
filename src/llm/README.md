@@ -55,15 +55,11 @@ uv sync --extra llm
 # Single query
 uv run python -m src.llm.run "how many trips were cancelled on the red line yesterday"
 
-# Full decision trace
-uv run python -m src.llm.run "is the elevator at Metro Center out of service" --verbose
-
 # Smoke test — all three domains + one rejection, strict mode
 uv run python -m src.llm.run --demo
 
 # Interactive loop
 uv run python -m src.llm.run --repl
-uv run python -m src.llm.run --repl --verbose
 
 # Hard-fail on any schema validation warning
 uv run python -m src.llm.run "..." --strict
@@ -72,12 +68,12 @@ uv run python -m src.llm.run "..." --strict
 uv run python -m src.llm.run "..." --candidate-limit 5
 
 # Use coherence-based disambiguation strategy
-uv run python -m src.llm.run "..." --candidate-limit 5 --strategy TypeWeightedCoherenceStrategy
+uv run python -m src.llm.run "..." --candidate-limit 5 --strategy coherence
 ```
 
 **`--candidate-limit`** — number of candidates fetched per anchor mention from the full-text index. `1` = baseline, no disambiguation. Values above `1` enable graph-assisted disambiguation via `--strategy`.
 
-**`--strategy`** — disambiguation strategy to use when `--candidate-limit > 1`. Default: `TopKStrategy`. Alternative: `TypeWeightedCoherenceStrategy` (scores candidates by typed-relationship coherence across all anchor types in the query).
+**`--strategy`** — disambiguation strategy to use when `--candidate-limit > 1`. Choices: `topk` (default, takes the highest-scoring candidate) or `coherence` (`TypeWeightedCoherenceStrategy` — scores candidates by typed-relationship coherence across all anchor types in the query).
 
 ---
 
@@ -140,7 +136,7 @@ Token budget for the narration call is controlled separately from the planner vi
 
 ## Schema Slices
 
-Each query domain maps to a YAML file in `src/llm/slices/`. A slice defines the node labels, relationship types, traversal patterns, and WMATA data quirks the LLM is permitted to reference for that domain.
+Each query domain maps to a YAML file in `src/llm/slices/`. A slice defines the exact node labels, relationship types, traversal patterns, and WMATA data quirks the LLM is permitted to reference for that domain. `SliceRegistry` validates every slice against the live graph at startup and injects it into the `QueryWriter` system prompt as hard constraints.
 
 ```
 src/llm/slices/
@@ -148,6 +144,11 @@ src/llm/slices/
     accessibility.yaml
     delay_propagation.yaml
 ```
+
+**Required vs optional schema** — node labels and relationships fall into two categories:
+
+- **`nodes:` / `relationships:`** — static structural nodes always present after base pipeline layers load (Station, Platform, Route, Trip, …). Checked against `db.labels()` / `db.relationshipTypes()` at startup; strict mode fails if any are absent.
+- **`nodes_optional:`** — RT/API overlay nodes absent on a fresh DB (Interruption:\*, TripUpdate, OutageEvent, …). Included in the validator whitelist so the LLM may reference them; never checked at startup. Any relationship whose endpoint is in `nodes_optional` is automatically treated as optional too — no `relationships_optional` entry needed in the YAML.
 
 To add a new domain: add a YAML file with the four required fields (`nodes`, `relationships`, `patterns`, `warnings`) and register the domain key in `_SLICE_KEY_MAP` in `planner.py`.
 
@@ -180,53 +181,96 @@ When Lucene full-text search returns zero candidates for a station or route ment
 
 ---
 
-## Text2Cypher — Implementation Notes
+## Text2Cypher — Current State
 
-The Text2Cypher path is wired in `run.py` and `narration_agent.py` but currently passes `t2c_output=None` — it is dead code. The Narration Agent's `synthesis` mode (both paths succeed) and `precision` mode (Text2Cypher only) are implemented and waiting for this path to be completed.
+The Text2Cypher path is fully wired. `QueryWriter` calls Claude with domain conventions and few-shot `.cypher` patterns, the `CypherValidator` runs EXPLAIN + whitelist checks + execution, and the resulting `Text2CypherOutput` is passed to the Narration Agent. The `precision` mode (Text2Cypher only) and `synthesis` mode (both paths) are live.
 
-### What it should answer
+### What it answers
 
-Text2Cypher fills a gap the subgraph path cannot: **exact scalar answers** — counts, totals, booleans. Example:
+Text2Cypher fills a gap the subgraph path cannot: **exact scalar answers** — counts, totals, booleans.
 
 - "How many trips were skipped on Orange Line yesterday?" → `7` (not "looks like several")
 - "Are there any active elevator outages at Gallery Place?" → `true`
 
-The subgraph path traverses and returns graph structure; the LLM then *estimates* from it. For precision questions this is unreliable. A direct aggregation query returns a definitive number.
+### Known gaps
 
-### Recommended approach: templated queries, not raw Text2Cypher
+None. The retry loop is implemented: `_run_query` in `run.py` wraps the `run_query_writer` +
+`validate_and_log_cypher` block in a `for attempt in range(1, 4)` loop. On validation failure the
+validator errors are fed back to `QueryWriter._build_user_message` as a targeted correction hint
+(`refinement_errors`), and the LLM is asked to fix only the flagged issues. `Text2CypherOutput.attempt_count`
+and `validation_notes` record how many cycles ran.
 
-Letting the LLM generate raw Cypher is unreliable — it hallucates property names, relationship types, and syntax. A safer pattern (validated in production by Neo4j's contract analysis work):
+---
 
-1. **The LLM fills typed parameters**, not Cypher syntax. Example struct:
-   ```python
-   {
-       "domain": "transfer_impact",
-       "metric": "skip_count",          # from an enum, not free text
-       "station": "A01",                # resolved anchor ID
-       "route": "O",                    # resolved anchor ID
-       "date": "20260407"               # resolved anchor ID
-   }
-   ```
-2. **Python constructs the Cypher** from validated templates keyed by `(domain, metric)`. The LLM never touches syntax.
-3. The result (a count or row set) is passed to the Narration Agent as `Text2CypherOutput`.
+## Future: Agentic Graph RAG
 
-### Why not both paths simultaneously?
+The current pipeline is **static RAG** — every decision is made upfront and the execution path is fixed. The Planner commits to a domain, path, and anchor list before touching any data. If the Cypher returns zero rows or the subgraph expansion is sparse, the pipeline proceeds to degraded narration with no recovery.
 
-They serve different query shapes and should both run in parallel for `path="both"` queries:
+Moving to **agentic graph RAG** means replacing the linear DAG with a loop where an LLM decides which tools to call, observes what it finds, and iterates.
 
-| Query type | Subgraph | Text2Cypher |
+### What static RAG cannot do (today)
+
+| Limitation | Example |
+|---|---|
+| No recovery from empty results | Cypher returns 0 rows → narration says "no data" with no retry |
+| Single upfront path commitment | Can't try text2cypher, observe failure, then fall back to subgraph |
+| No multi-domain queries | "Which stations have both elevator outages AND cancelled trips?" is classified into one domain and loses the other half |
+| Predetermined hop topology | `EXPANSION_CONFIG` hard-codes which relationship types to follow per domain — the expander can't adapt to what it finds mid-traversal |
+| ~~No self-correction~~ | Implemented: 3-attempt retry loop feeds validator errors back to `QueryWriter` as targeted correction hints (`refinement_errors`) |
+| Stateless across turns | No memory of previous results that could seed a follow-up query |
+
+### Proposed agentic architecture
+
+Replace `_run_query` in `run.py` with an agent loop. The agent has access to a fixed tool set and decides which tools to call based on intermediate results:
+
+```
+Tools:
+  resolve_entities(mentions)        → AnchorResolutions
+  get_schema(domain)                → SchemaSlice
+  run_cypher(query)                 → rows | error
+  expand_subgraph(anchor_ids)       → SubgraphOutput
+  clarify_anchors(failed_mentions)  → corrected AnchorResolutions
+
+Agent loop (max N iterations):
+  1. Classify domain + extract anchor mentions (Planner, unchanged)
+  2. Call tools in any order, observe results
+  3. If run_cypher returns 0 rows → broaden query or switch to expand_subgraph
+  4. If expand_subgraph is sparse → try different relationship types via run_cypher
+  5. Stop when confident enough to narrate, or budget exhausted
+  6. Call NarrationAgent with whatever was gathered
+```
+
+### Extension points already in the codebase
+
+Every component is already structured as a callable with a clean input/output contract — converting them to tools requires no internal changes:
+
+| Current component | As an agent tool |
+|---|---|
+| `AnchorResolver.resolve()` | `resolve_entities(mentions) → AnchorResolutions` |
+| `cypher_validator()` | `run_cypher(query) → rows \| ValidationResult` |
+| `SubgraphBuilder.run()` | `expand_subgraph(anchor_ids, domain) → SubgraphOutput` |
+| `AnchorClarifier.clarify()` | `clarify_anchors(failed) → AnchorResolutions` |
+| `SliceRegistry.get()` | `get_schema(domain) → SchemaSlice` |
+
+`Text2CypherOutput.attempt_count`, `validation_notes`, and `ValidationError.cypher_excerpt` were designed specifically for a retry-aware loop — these fields are dead weight in the current static pipeline but become load-bearing in an agentic one.
+
+### Latency and cost trade-offs
+
+| Approach | LLM calls per query | Latency |
 |---|---|---|
-| "Explain why Red Line is disrupted" | ✓ topology + narrative | — |
-| "How many skips on Orange Line yesterday?" | — | ✓ exact count |
-| "How many and which routes are affected?" | ✓ which routes | ✓ exact count |
+| Current pipeline (with retry loop) | 2–7 | ~5–15s |
+| Level 2: path fallback (text2cypher → subgraph on zero rows) | 2–8 | ~8–20s |
+| Level 3: full agent loop | 4–12 | ~15–40s |
 
-For `path="both"`, Narration Agent `synthesis` mode leads with the Text2Cypher number and explains using the subgraph context. The architecture already supports this — `synthesis` mode just needs both inputs to be non-None.
+The agent loop is best suited for the REPL and async contexts. The `--demo` batch mode should keep the static pipeline as a fast-path option.
 
-### Outstanding questions before implementing
+### Recommended implementation path
 
-- Define the full set of `metric` enum values per domain (what counts/aggregations are useful)
-- Decide where template Cypher lives (inline in a new `text2cypher_writer.py`, or in the domain slice YAMLs)
-- Determine whether `path` override should force Text2Cypher when the Planner routes to `subgraph`
+1. ~~**Fix the remaining known gap** in the Text2Cypher path (retry loop)~~ — done. Retry loop, resolved IDs, and whitelist checks are all wired.
+2. **Add a `path_fallback` mechanism** to `run.py`: if text2cypher returns zero rows and path was `text2cypher`, re-run as `subgraph`. No agent loop required — just a conditional in `_run_query`. This alone recovers the most common failure mode.
+3. **Build the tool wrappers** as a thin adapter layer over the existing components.
+4. **Wire Claude tool use** via the Anthropic SDK (`tools=[...]` in `client.messages.create`) — the `QueryWriter` already uses the SDK directly, so no new dependencies.
+5. **Evaluate using `tests/eval/`** before and after each step to measure answer quality improvement.
 
 ---
 
@@ -245,7 +289,11 @@ src/llm/
     context_serializer.py        ← Stage 3: serialization + 6,000-token budget enforcement
     subgraph_output.py           ← SubgraphOutput dataclass; make_zero_anchor_fallback()
     expansion_config.py          ← DomainExpansionConfig; EXPANSION_CONFIG per domain
-    slice_registry.py            ← Loads and validates schema slices against live graph
+    query_writer.py              ← Text2Cypher LLM call; injects SchemaSlice constraints +
+    │                               resolved anchor IDs as literals into the prompt
+    cypher_validator.py          ← EXPLAIN + node/rel/property whitelist + execution
+    slice_registry.py            ← Loads and validates schema slices against live graph;
+    │                               splits required vs optional nodes/relationships
     llm_factory.py               ← LLM provider abstraction (currently: Anthropic)
     narration_agent.py           ← Terminal stage; mode selection, prompt assembly, LLM call
     narration_output.py          ← NarrationOutput dataclass

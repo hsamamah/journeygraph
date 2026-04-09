@@ -3,11 +3,11 @@
 JourneyGraph LLM Query Pipeline — run script.
 
 Entry point for natural language querying over the WMATA knowledge graph.
-Runs the full pipeline: Planner → Anchor Resolution → Subgraph path →
+Runs the full pipeline: Planner → Anchor Resolution → Clarification →
+Query Writer + Cypher Validator (text2cypher/both paths) → Subgraph path →
 Narration Agent. Anchor resolution runs once after the Planner for all
 non-rejected queries — resolved IDs are shared across both the Subgraph and
-Text2Cypher paths. The Text2Cypher path (Query Writer, Cypher Validator) is
-implemented on a separate branch and not yet wired here.
+Text2Cypher paths.
 
 Usage:
     # Single query (default)
@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING
 
 from neo4j.exceptions import Neo4jError
 
-from src.common.config import get_llm_config
+from src.common.config import LLMConfig, get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.llm.anchor_clarifier import AnchorClarifier
@@ -60,6 +60,9 @@ from src.llm.narration_agent import NarrationAgent
 from src.llm.planner import Planner
 from src.llm.slice_registry import SliceRegistry
 from src.llm.subgraph_builder import SubgraphBuilder
+from src.llm.cypher_validator import validate_and_log_cypher
+from src.llm.query_writer import run_query_writer
+from src.llm.text2cypher_output import Text2CypherOutput
 
 if TYPE_CHECKING:
     from src.llm.narration_output import NarrationOutput
@@ -299,25 +302,25 @@ def _fmt_subgraph_verbose(sub: SubgraphOutput) -> str:
 
 # ── Query execution ───────────────────────────────────────────────────────────
 
-
 def _run_query(
     planner: Planner,
     narration_agent: NarrationAgent,
     db: Neo4jManager,
     query: str,
     *,
+    registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int = 1,
     strategy: str = "topk",
     label: str | None = None,
-) -> tuple[PlannerOutput, SubgraphOutput | None, NarrationOutput | None]:
+) -> tuple[PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None]:
     """
     Execute a single query through the full pipeline.
 
     Stages: Planner → Anchor Resolution → Clarification (if needed) →
+    Query Writer + Cypher Validator (text2cypher/both paths) →
     Subgraph path → Narration Agent.
-    Text2Cypher path is not yet wired (separate branch); the Narration Agent
-    receives t2c_output=None and selects contextual or degraded mode.
 
     invocation_time is captured once here so relative date expressions
     (yesterday, last Tuesday) resolve consistently within the same
@@ -328,6 +331,9 @@ def _run_query(
         narration_agent:  Initialised NarrationAgent instance.
         db:               Live Neo4jManager — held open across queries.
         query:            Raw query string.
+        registry:         SliceRegistry — used by Query Writer path for
+                          property whitelist validation.
+        llm_config:       LLMConfig — passed to QueryWriter for model/key.
         clarifier:        AnchorClarifier — fires only when station/route
                           anchors fail Lucene lookup.
         candidate_limit:  Max candidates per mention from full-text index.
@@ -337,7 +343,8 @@ def _run_query(
         label:            Optional prefix for --demo mode e.g. '[1/4]'.
 
     Returns:
-        (PlannerOutput, SubgraphOutput | None, NarrationOutput | None)
+        (PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None)
+        Text2CypherOutput is None when the planner routes to subgraph-only path.
         NarrationOutput is None only when the query is rejected or a
         Neo4j error occurs during anchor resolution.
     """
@@ -352,7 +359,7 @@ def _run_query(
     print(_fmt_planner_verbose(planner_output))
 
     if planner_output.rejected:
-        return planner_output, None, None
+        return planner_output, None, None, None
 
     # ── Anchor resolution — shared pre-fork step ──────────────────────────────
     # Runs for every non-rejected query regardless of path. Both Text2Cypher
@@ -377,7 +384,7 @@ def _run_query(
             exc_info=True,
         )
         print(f"\nDatabase error during anchor resolution: {exc}")
-        return planner_output, None, None
+        return planner_output, None, None, None
 
     # ── Anchor clarification — fires only on station/route failures ──────────────
     # Silent repair pass: maps failed mentions to valid WMATA names via a small
@@ -396,6 +403,73 @@ def _run_query(
             "run | zero anchors resolved — proceeding to degraded narration | query=%r",
             query,
         )
+
+    # ── Query Writer path — up to 3 attempts ─────────────────────────────────
+    # Attempt 1: plain generation. Attempts 2–3: validator errors fed back as
+    # targeted correction hints. Stops as soon as validation passes.
+    t2c_output: Text2CypherOutput | None = None
+
+    if planner_output.path in {"text2cypher", "both"}:
+        schema_slice = registry.get(planner_output.schema_slice_key)
+        _MAX_ATTEMPTS = 3
+        refinement_errors: list[str] = []
+        all_validation_notes: list[str] = []
+
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            query_writer_output = run_query_writer(
+                query,
+                planner_output,
+                llm_config,
+                schema_slice=schema_slice,
+                resolved_anchors=resolutions.as_flat_dict(),
+                refinement_errors=refinement_errors or None,
+            )
+            print(f"\n[Query Writer — attempt {attempt}/{_MAX_ATTEMPTS}]")
+            print("Cypher Query:\n", query_writer_output.cypher_query)
+            if attempt == 1:
+                print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
+
+            val_result = validate_and_log_cypher(
+                query_writer_output.cypher_query,
+                schema_slice,
+                schema_slice.property_registry,
+                db.driver,
+                log,
+            )
+
+            if val_result.valid:
+                print(f"Cypher Validator: valid (attempt {attempt}).")
+                t2c_output = Text2CypherOutput(
+                    cypher=query_writer_output.cypher_query,
+                    results=val_result.results or [],
+                    domain=planner_output.domain,
+                    attempt_count=attempt,
+                    validation_notes=all_validation_notes,
+                    success=True,
+                )
+                break
+
+            # Validation failed — collect errors and prepare for next attempt
+            log.warning(
+                "run | cypher validation failed | attempt=%d/%d | errors=%s",
+                attempt,
+                _MAX_ATTEMPTS,
+                val_result.errors,
+            )
+            all_validation_notes.extend(val_result.errors)
+            refinement_errors = val_result.errors
+
+        else:
+            # All attempts exhausted without a valid query
+            print(f"Cypher Validator: all {_MAX_ATTEMPTS} attempts failed.")
+            t2c_output = Text2CypherOutput(
+                cypher="",
+                results=[],
+                domain=planner_output.domain,
+                attempt_count=_MAX_ATTEMPTS,
+                validation_notes=all_validation_notes,
+                success=False,
+            )
 
     # ── Subgraph path ─────────────────────────────────────────────────────────
     sub_output: SubgraphOutput | None = None
@@ -421,22 +495,19 @@ def _run_query(
             print(_fmt_subgraph_verbose(sub_output))
 
     # ── Narration Agent ───────────────────────────────────────────────────────
-    # Text2Cypher path not yet wired — t2c_output=None. The Narration Agent
-    # selects contextual mode (subgraph succeeded) or degraded (neither).
     narration_output = narration_agent.run(
         query,
         planner_output,
-        t2c_output=None,
+        t2c_output=t2c_output,
         subgraph_output=sub_output,
         resolutions=resolutions,
     )
     print(_fmt_narration(narration_output))
 
-    return planner_output, sub_output, narration_output
+    return planner_output, t2c_output, sub_output, narration_output
 
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
-
 
 def _mode_default(
     planner: Planner,
@@ -444,7 +515,9 @@ def _mode_default(
     db: Neo4jManager,
     query: str,
     *,
+    registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -453,7 +526,9 @@ def _mode_default(
         narration_agent,
         db,
         query,
+        registry=registry,
         clarifier=clarifier,
+        llm_config=llm_config,
         candidate_limit=candidate_limit,
         strategy=strategy,
     )
@@ -464,7 +539,9 @@ def _mode_demo(
     narration_agent: NarrationAgent,
     db: Neo4jManager,
     *,
+    registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -473,34 +550,50 @@ def _mode_demo(
     Always runs in strict mode (enforced at registry construction by caller).
     """
     print(f"Running {len(_DEMO_QUERIES)} demo queries in strict mode...\n")
-    results: list[tuple[str, PlannerOutput]] = []
+
+    results: list[tuple] = []
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, _, _ = _run_query(
+        planner_output, t2c_output, _, narration_output = _run_query(
             planner,
             narration_agent,
             db,
             query,
+            registry=registry,
             clarifier=clarifier,
+            llm_config=llm_config,
             candidate_limit=candidate_limit,
             strategy=strategy,
             label=label,
         )
-        results.append((expected_domain, planner_output))
+        results.append((expected_domain, planner_output, t2c_output, narration_output))
 
     print(f"\n{'═' * 56}")
     print("Demo summary:")
     all_passed = True
-    for (expected, output), (query, _) in zip(results, _DEMO_QUERIES, strict=True):
+    for (expected, planner_out, t2c_out, narration_out), (query, _) in zip(
+        results, _DEMO_QUERIES, strict=True
+    ):
+        checks: list[tuple[bool, str]] = []
+
         if expected == "rejection":
-            passed = output.rejected
+            checks.append((planner_out.rejected, "planner:rejected"))
         else:
-            passed = not output.rejected and output.domain == expected
-        status = "✅" if passed else "❌"
-        if not passed:
+            checks.append((not planner_out.rejected and planner_out.domain == expected, f"planner:domain={expected}"))
+            if planner_out.path in {"text2cypher", "both"}:
+                t2c_ok = t2c_out is not None and t2c_out.success
+                checks.append((t2c_ok, "t2c:valid"))
+                result_count = len(t2c_out.results) if t2c_out is not None else 0
+                checks.append((True, f"t2c:rows={result_count}"))
+            checks.append((narration_out is not None, "narration:produced"))
+
+        row_passed = all(ok for ok, _ in checks)
+        if not row_passed:
             all_passed = False
-        print(f"  {status}  {query[:52]!r:<54}  expected={expected}")
+        status = "✅" if row_passed else "❌"
+        detail = "  ".join(("✓" if ok else "✗") + lbl for ok, lbl in checks)
+        print(f"  {status}  {query[:48]!r:<50}  {detail}")
 
     print(f"\n{'All passed' if all_passed else 'Some checks failed'}")
 
@@ -510,7 +603,9 @@ def _mode_repl(
     narration_agent: NarrationAgent,
     db: Neo4jManager,
     *,
+    registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -540,7 +635,9 @@ def _mode_repl(
             narration_agent,
             db,
             query,
+            registry=registry,
             clarifier=clarifier,
+            llm_config=llm_config,
             candidate_limit=candidate_limit,
             strategy=strategy,
         )
@@ -550,13 +647,13 @@ def _mode_repl(
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 
-def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, AnchorClarifier]:
+def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, AnchorClarifier, SliceRegistry, LLMConfig]:
     """
     Initialise the full pipeline stack.
 
-    Returns (Planner, NarrationAgent, Neo4jManager, AnchorClarifier). The
-    Neo4j connection is held open across queries for the Subgraph path and
-    closed by main() on exit via the finally block.
+    Returns (Planner, NarrationAgent, Neo4jManager, AnchorClarifier,
+    SliceRegistry, LLMConfig). The Neo4j connection is held open across
+    queries and closed by main() on exit via the finally block.
 
     Sequencing:
       1. LLM config      — hard fail if ANTHROPIC_API_KEY missing
@@ -566,6 +663,7 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, An
       5. NarrationAgent  — builds Narration LLM instance
                            (LLM_NARRATION_MAX_TOKENS)
       6. AnchorClarifier — fetches station/route catalogue from graph once
+      7. Registry + LLMConfig returned for Query Writer path
     """
     llm_config = get_llm_config()
     log.info(
@@ -587,14 +685,16 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, An
     planner = Planner(registry, llm_config, strict=strict)
     narration_agent = NarrationAgent(llm_config)
     clarifier = AnchorClarifier(db, llm_config)
-    return planner, narration_agent, db, clarifier
+    return planner, narration_agent, db, clarifier, registry, llm_config
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Set up global logging configuration to show all internal module logs
+    # Configure root logger for third-party libraries (httpx, neo4j, etc.).
+    # Project loggers use get_logger(__name__) which writes to logs/pipeline.log
+    # directly (propagate=False), so this basicConfig only affects external libs.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -613,7 +713,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     try:
-        planner, narration_agent, db, clarifier = _startup(strict=strict)
+        planner, narration_agent, db, clarifier, registry, llm_config = _startup(strict=strict)
     except (OSError, RuntimeError) as exc:
         log.error("Startup failed: %s", exc)
         sys.exit(1)
@@ -624,7 +724,9 @@ def main(argv: list[str] | None = None) -> None:
                 planner,
                 narration_agent,
                 db,
+                registry=registry,
                 clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -633,7 +735,9 @@ def main(argv: list[str] | None = None) -> None:
                 planner,
                 narration_agent,
                 db,
+                registry=registry,
                 clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -643,7 +747,9 @@ def main(argv: list[str] | None = None) -> None:
                 narration_agent,
                 db,
                 args.query,
+                registry=registry,
                 clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )

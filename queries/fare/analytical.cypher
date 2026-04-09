@@ -84,15 +84,15 @@ MATCH (flr)-[:TO_AREA]->(fz)
 MATCH (flr)-[ap:APPLIES_PRODUCT]->(fp:FareProduct)
 WHERE ap.amount = 0.0
 RETURN
-  s1.stop_name AS from_station,
-  s2.stop_name AS to_station,
+  s1.name AS from_station,
+  s2.name AS to_station,
   fz.zone_id AS shared_zone,
   fp.fare_product_name AS product,
   ap.amount AS fare,
   ap.timeframe AS timeframe;
 
 // ── Q8: Fare lookup — price between two stations [+ PHYSICAL] ───────────
-// Parameterised: replace $from and $to with station stop_ids.
+// Parameterised: replace $from and $to with station ids.
 // Example: STN_A01_C01 (Metro Center) → STN_A02 (Farragut North)
 MATCH (s1:Station {id: 'STN_A01_C01'})-[:IN_ZONE]->(fz1:FareZone)
 MATCH (s2:Station {id: 'STN_A02'})-[:IN_ZONE]->(fz2:FareZone)
@@ -100,8 +100,8 @@ MATCH (flr:FareLegRule)-[:FROM_AREA]->(fz1)
 MATCH (flr)-[:TO_AREA]->(fz2)
 MATCH (flr)-[ap:APPLIES_PRODUCT]->(fp:FareProduct)
 RETURN
-  s1.stop_name AS from_station,
-  s2.stop_name AS to_station,
+  s1.name AS from_station,
+  s2.name AS to_station,
   fp.fare_product_name AS product,
   ap.timeframe AS timeframe,
   ap.amount AS fare,
@@ -113,12 +113,12 @@ MATCH (s:Station)-[:IN_ZONE]->(fz:FareZone)
 RETURN
   fz.zone_id AS zone,
   count(s) AS station_count,
-  collect(s.stop_name) AS stations
+  collect(s.name) AS stations
 ORDER BY toInteger(fz.zone_id);
 
 // ── Q10: FareGates per station [+ PHYSICAL] ─────────────────────────────
 MATCH (fg:FareGate)-[:BELONGS_TO]->(s:Station)
 MATCH (fg)-[:IN_ZONE]->(fz:FareZone)
-RETURN s.stop_name AS station, fz.zone_id AS zone, count(fg) AS gate_count
+RETURN s.name AS station, fz.zone_id AS zone, count(fg) AS gate_count
 ORDER BY gate_count DESC
 LIMIT 15;

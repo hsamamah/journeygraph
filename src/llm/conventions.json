@@ -1,0 +1,46 @@
+{
+  "stop_id_prefixes": {
+    "STN_": "Station",
+    "ENT_": "StationEntrance",
+    "PF_": "Platform",
+    "PLF_": "BoardingArea",
+    "NODE_": "Pathway"
+  },
+  "fare_gate_pattern": "_FG_",
+  "pathway_node_types": {
+    "ELE": "Elevator",
+    "ELV": "Elevator",
+    "ESC": "Escalator",
+    "FG": "FareGate",
+    "MZ": "Mezzanine",
+    "STR": "Stairs"
+  },
+  "rail_network_ids": [
+    "metrorail",
+    "metrorail_shuttle"
+  ],
+  "maintenance_service_suffix": "_R",
+  "us_federal_holidays": [
+    "New Year's Day",
+    "MLK Day",
+    "Presidents' Day",
+    "Memorial Day",
+    "Juneteenth",
+    "Independence Day",
+    "Labor Day",
+    "Columbus Day",
+    "Veterans Day",
+    "Thanksgiving",
+    "Christmas Day"
+  ],
+  "fare_transfer_rule_key": "from_leg_group_id + '__' + to_leg_group_id",
+  "route_type_mode": {
+    "1": "rail",
+    "3": "bus"
+  },
+  "single_agency_id": "1",
+  "cypher_file_comment_regex": "// ── ",
+  "service_alert_effect_map": {
+    "OTHER_EFFECT": "service_change"
+  }
+}
