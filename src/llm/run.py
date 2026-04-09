@@ -184,21 +184,8 @@ def _fmt_planner_compact(output: PlannerOutput) -> str:
     return f"domain={output.domain}  path={output.path}\nanchors: {anchor_str}"
 
 
-def _fmt_planner_verbose(
-    output: PlannerOutput,
-    stage1_scores: dict[str, float] | None = None,
-) -> str:
+def _fmt_planner_verbose(output: PlannerOutput) -> str:
     lines: list[str] = []
-
-    if stage1_scores is not None:
-        lines.append("─── Stage 1 — domain classifier ────────────────────────")
-        for domain, score in sorted(stage1_scores.items()):
-            marker = (
-                "  ← selected"
-                if (not output.rejected and domain == output.domain)
-                else ""
-            )
-            lines.append(f"  {domain:<22} {score:.4f}{marker}")
 
     lines.append("─── PlannerOutput ───────────────────────────────────────")
     lines.append(f"  domain           : {output.domain!r}")
@@ -345,21 +332,18 @@ def _run_query(
 
     Returns:
         (PlannerOutput, SubgraphOutput | None, NarrationOutput | None)
-        NarrationOutput is None only when the query is rejected or zero
-        anchors resolve (pipeline stops before narration).
+        NarrationOutput is None only when the query is rejected or a
+        Neo4j error occurs during anchor resolution.
     """
     invocation_time = datetime.now(UTC)
     prefix = f"{label}  " if label else ""
-
-    stage1_result = planner.classify_only(query)
-    stage1_scores = stage1_result.scores
 
     planner_output = planner.run(query)
 
     # ── Planner output ────────────────────────────────────────────────────────
     header = f"\n{'═' * 56}\n{prefix}Query: {query!r}\n{'═' * 56}"
     print(header)
-    print(_fmt_planner_verbose(planner_output, stage1_scores=stage1_scores))
+    print(_fmt_planner_verbose(planner_output))
 
     if planner_output.rejected:
         return planner_output, None, None
@@ -389,20 +373,17 @@ def _run_query(
         print(f"\nDatabase error during anchor resolution: {exc}")
         return planner_output, None, None
 
-    if not resolutions.any_resolved:
-        log.warning("run | zero anchors resolved | query=%r", query)
-        print(
-            "\nNo entities could be resolved from your query. "
-            "Please restate it with a specific station, route, or date "
-            "(e.g. 'Metro Center', 'Red Line', 'yesterday')."
+    if resolutions.any_resolved:
+        log.info(
+            "run | anchors resolved | config=%s | %s",
+            resolver.config,
+            resolutions.as_flat_dict(),
         )
-        return planner_output, None, None
-
-    log.info(
-        "run | anchors resolved | config=%s | %s",
-        resolver.config,
-        resolutions.as_flat_dict(),
-    )
+    else:
+        log.warning(
+            "run | zero anchors resolved — proceeding to degraded narration | query=%r",
+            query,
+        )
 
     # ── Subgraph path ─────────────────────────────────────────────────────────
     sub_output: SubgraphOutput | None = None
@@ -435,6 +416,7 @@ def _run_query(
         planner_output,
         t2c_output=None,
         subgraph_output=sub_output,
+        resolutions=resolutions,
     )
     print(_fmt_narration(narration_output))
 

@@ -11,9 +11,11 @@ Two responsibilities:
        preserved. Anchor nodes are always serialized first.
 
     2. Budget enforcement — after full serialization, counts tokens using
-       tiktoken (cl100k_base). If the block exceeds the 2,000-token budget,
+       tiktoken (cl100k_base). If the block exceeds the 6,000-token budget,
        removes nodes one at a time in priority order, re-serializes and
-       re-counts after each removal, until the block fits.
+       re-counts after each removal, until the block fits. If the budget
+       is still exceeded after all non-anchor nodes are removed, the
+       provenance section is progressively capped.
 
 Trim priority (lowest priority = removed first):
     Group 1 — Provenance section (TripUpdate, ServiceAlert, StopTimeUpdate)
@@ -40,11 +42,17 @@ log = logging.getLogger(__name__)
 
 # ── Budget ────────────────────────────────────────────────────────────────────
 
-TOKEN_BUDGET = 2_000
+TOKEN_BUDGET = 6_000
 # _TRIM_NOTICE_RESERVE accounts for the ~20-token trim notice that
 # SubgraphBuilder appends after budget enforcement. Without this reserve the
 # final context can silently exceed TOKEN_BUDGET by that margin.
 _EFFECTIVE_BUDGET = TOKEN_BUDGET - 30
+
+# Maximum provenance nodes rendered in the serialized context block.
+# Provenance nodes (TripUpdate, ServiceAlert, StopTimeUpdate) are verbose and
+# have no trim path in the main loop — this hard cap prevents them from
+# dominating the budget when many provenance records are present.
+_MAX_PROVENANCE_NODES = 20
 
 # ── Tokenizer ─────────────────────────────────────────────────────────────────
 # cl100k_base is a close approximation for Claude-class models.
@@ -109,10 +117,12 @@ class SerializerResult:
 class ContextSerializer:
     """
     Serializes a RawSubgraph into the Subgraph Context Block and enforces
-    the 2,000-token budget.
+    the 6,000-token budget.
 
     Stateless — no instance state. All methods are pure functions over
     their inputs. Instantiated per pipeline invocation by the Context Builder.
+    Token budget: 6,000 tokens (TOKEN_BUDGET), with a 30-token reserve for
+    the trim notice appended by SubgraphBuilder.
     """
 
     def serialize_and_enforce(
@@ -138,8 +148,11 @@ class ContextSerializer:
         # Build relationship index: element_id → list of connected RawRels
         rel_index = _build_rel_index(raw.rels)
 
-        # Full serialization pass
-        context = self._serialize(raw, nodes_by_eid, rel_index, resolutions)
+        # Full serialization pass (provenance capped at _MAX_PROVENANCE_NODES)
+        context = self._serialize(
+            raw, nodes_by_eid, rel_index, resolutions,
+            provenance_limit=_MAX_PROVENANCE_NODES,
+        )
         token_count = _count_tokens(context)
 
         log.info(
@@ -164,6 +177,7 @@ class ContextSerializer:
             rel_index=rel_index,
             resolutions=resolutions,
             token_count=token_count,
+            provenance_limit=_MAX_PROVENANCE_NODES,
         )
 
         log.info(
@@ -189,6 +203,7 @@ class ContextSerializer:
         rel_index: dict[str, list[RawRel]],
         resolutions: AnchorResolutions,
         token_count: int,
+        provenance_limit: int = _MAX_PROVENANCE_NODES,
     ) -> tuple[str, int, int]:
         """
         Removes nodes one at a time in trim priority order until the
@@ -235,20 +250,51 @@ class ContextSerializer:
 
         # Single final serialization — corrects any approximation error from
         # delta tracking (section header count changes, Total nodes line, etc.)
-        context = self._serialize(raw, nodes_by_eid, rel_index, resolutions)
+        context = self._serialize(
+            raw, nodes_by_eid, rel_index, resolutions,
+            provenance_limit=provenance_limit,
+        )
         token_count = _count_tokens(context)
 
         if token_count > _EFFECTIVE_BUDGET:
-            # Trim candidates exhausted — only anchors remain. Log and continue:
-            # the Narration Agent will receive a trimmed=True signal and degrade
-            # gracefully. Anchors are never removed regardless.
-            log.warning(
-                "context_serializer | budget not met after exhausting trim candidates "
-                "| tokens=%d effective_budget=%d | domain=%s",
-                token_count,
-                _EFFECTIVE_BUDGET,
-                raw.domain,
+            # Non-anchor trim candidates exhausted. Binary-search the provenance
+            # limit to find the largest count that fits the budget.
+            # O(log N) re-serializations instead of O(N) linear scan.
+            lo, hi = 0, min(len(raw.provenance_nodes), _MAX_PROVENANCE_NODES)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                candidate = self._serialize(
+                    raw, nodes_by_eid, rel_index, resolutions,
+                    provenance_limit=mid,
+                )
+                if _count_tokens(candidate) <= _EFFECTIVE_BUDGET:
+                    lo = mid
+                else:
+                    hi = mid - 1
+
+            provenance_limit = lo
+            context = self._serialize(
+                raw, nodes_by_eid, rel_index, resolutions,
+                provenance_limit=provenance_limit,
             )
+            token_count = _count_tokens(context)
+
+            if token_count > _EFFECTIVE_BUDGET:
+                log.warning(
+                    "context_serializer | budget not met after exhausting trim candidates "
+                    "and provenance | tokens=%d effective_budget=%d | domain=%s",
+                    token_count,
+                    _EFFECTIVE_BUDGET,
+                    raw.domain,
+                )
+            else:
+                log.info(
+                    "context_serializer | budget met via provenance cap=%d "
+                    "| tokens=%d | domain=%s",
+                    provenance_limit,
+                    token_count,
+                    raw.domain,
+                )
 
         return context, token_count, nodes_removed
 
@@ -260,11 +306,12 @@ class ContextSerializer:
         nodes_by_eid: dict[str, RawNode],
         rel_index: dict[str, list[RawRel]],
         resolutions: AnchorResolutions,
+        provenance_limit: int = _MAX_PROVENANCE_NODES,
     ) -> str:
         """
         Produces the full structured Subgraph Context Block from the current
         node set. Relationship types are preserved. Provenance section is
-        appended after the main node block.
+        appended after the main node block, capped at provenance_limit entries.
 
         Called once for initial serialization and once per trim iteration.
         """
@@ -316,9 +363,12 @@ class ContextSerializer:
             lines.append("")
 
         # ── Provenance section ────────────────────────────────────────────────
-        if raw.provenance_nodes:
-            lines.append("── Provenance ──")
-            for prov in raw.provenance_nodes:
+        capped_provenance = raw.provenance_nodes[:provenance_limit]
+        if capped_provenance:
+            omitted = len(raw.provenance_nodes) - len(capped_provenance)
+            header = "── Provenance ──" + (f" (showing {len(capped_provenance)} of {len(raw.provenance_nodes)}, {omitted} omitted)" if omitted else "")
+            lines.append(header)
+            for prov in capped_provenance:
                 label_str = ":".join(prov["labels"])
                 props_str = _format_props(prov["props"])
                 lines.append(f"  [{prov['rel_type']}] :{label_str} {props_str}")

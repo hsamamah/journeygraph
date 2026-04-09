@@ -55,6 +55,7 @@ from src.llm.narration_output import NarrationOutput
 
 if TYPE_CHECKING:
     from src.common.config import LLMConfig
+    from src.llm.anchor_resolver import AnchorResolutions
     from src.llm.planner_output import PlannerOutput
     from src.llm.subgraph_output import SubgraphOutput
     from src.llm.text2cypher_output import Text2CypherOutput
@@ -105,10 +106,15 @@ _SECTION2: dict[str, str] = {
         "graph context."
     ),
     "degraded": (
-        "Limited or no data is available for this query. "
-        "Present only what could be determined from the partial data provided. "
-        "Explicitly state what could not be determined and why, so the user "
-        "understands the scope of the answer."
+        "Limited or no graph data is available for this query. "
+        "The RESOLUTION STATUS section below lists which entities were found "
+        "and which could not be matched. "
+        "State explicitly what was and was not resolved. "
+        "If specific entities could not be found, name them and suggest how "
+        "the user might rephrase (e.g. use a specific station name, route "
+        "number, or date). "
+        "Do not speculate about data you do not have. "
+        "Do not fabricate results."
     ),
 }
 
@@ -185,6 +191,7 @@ class NarrationAgent:
         *,
         t2c_output: Text2CypherOutput | None,
         subgraph_output: SubgraphOutput | None,
+        resolutions: AnchorResolutions | None = None,
     ) -> NarrationOutput:
         """
         Run the Narration Agent for a single query.
@@ -197,6 +204,9 @@ class NarrationAgent:
                             path was not run or is not yet implemented.
             subgraph_output: SubgraphOutput or None if the Subgraph path
                             was not run.
+            resolutions:    AnchorResolutions from the resolver, if available.
+                            Used in degraded mode to surface resolved and
+                            failed anchor info to the LLM.
 
         Returns:
             NarrationOutput. Always returns — never raises on query-level
@@ -215,7 +225,7 @@ class NarrationAgent:
 
         system_prompt = self._build_system_prompt(mode, domain)
         user_message = self._build_user_message(
-            query, domain, mode, t2c_output, subgraph_output
+            query, domain, mode, t2c_output, subgraph_output, resolutions
         )
 
         try:
@@ -316,26 +326,52 @@ class NarrationAgent:
         mode: str,
         t2c_output: Text2CypherOutput | None,
         subgraph_output: SubgraphOutput | None,
+        resolutions: AnchorResolutions | None = None,
     ) -> str:
         """
-        Assemble the four-section user message.
+        Assemble the user message.
 
         Sections:
-            QUERY           — original query string
-            DOMAIN / MODE   — routing metadata
-            PRECISE RESULTS — Text2Cypher results block (if available)
-            GRAPH CONTEXT   — Named Projection context block (if available)
+            QUERY              — original query string
+            DOMAIN / MODE      — routing metadata
+            RESOLUTION STATUS  — resolved and failed anchors (degraded mode only)
+            PRECISE RESULTS    — Text2Cypher results block (if available)
+            GRAPH CONTEXT      — Named Projection context block (if available)
         """
         lines: list[str] = []
 
         # ── QUERY ─────────────────────────────────────────────────────────────
+        # XML tags prevent a crafted query from colliding with section headers
+        # (e.g. "PRECISE RESULTS" or "GRAPH CONTEXT" injected mid-query).
         lines.append("QUERY")
-        lines.append(f"'{query}'")
+        lines.append(f"<user_query>{query}</user_query>")
         lines.append("")
 
         # ── DOMAIN / MODE ──────────────────────────────────────────────────────
         lines.append(f"DOMAIN: {domain} | MODE: {mode}")
         lines.append("")
+
+        # ── RESOLUTION STATUS (degraded mode only) ────────────────────────────
+        # Surfaces what the resolver found and what it couldn't match, so the
+        # LLM can tell the user specifically what failed rather than giving a
+        # generic "no data" response.
+        # NOTE: resolutions is intentionally only consumed here in degraded mode.
+        # In other modes (contextual, precision, synthesis) the subgraph or T2C
+        # output already embeds resolved anchor context — surfacing it again would
+        # be redundant. Any extension that surfaces resolutions in non-degraded
+        # modes should be deliberate, not accidental.
+        if mode == "degraded" and resolutions is not None:
+            lines.append("RESOLUTION STATUS")
+            flat = resolutions.as_flat_dict()
+            if flat:
+                for mention, node_ids in flat.items():
+                    lines.append(f"  resolved: {mention!r} → {node_ids}")
+            if resolutions.failed:
+                for anchor, reason in resolutions.failed.items():
+                    lines.append(f"  failed:   {anchor!r} — {reason}")
+            if not flat and not resolutions.failed:
+                lines.append("  (no anchors extracted from query)")
+            lines.append("")
 
         # ── PRECISE RESULTS ────────────────────────────────────────────────────
         if t2c_output is not None and t2c_output.success:
@@ -435,6 +471,7 @@ class NarrationAgent:
                 "routes": list(planner_output.anchors.routes),
                 "dates": list(planner_output.anchors.dates),
                 "pathway_nodes": list(planner_output.anchors.pathway_nodes),
+                "levels": list(planner_output.anchors.levels),
             },
         }
 
