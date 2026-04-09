@@ -57,12 +57,18 @@ class QueryWriter:
         return cypher_query, comments
 
     def _build_system_prompt(self, conventions: dict, patterns: list[str]) -> str:
-        conventions_str = f"System conventions:\n{conventions}"
+        parts = [
+            "You are a Cypher query writer for a Neo4j knowledge graph of the WMATA transit system.",
+            "Given a user query, anchors (resolved graph entity IDs), and a schema slice name, "
+            "produce a single read-only Cypher query that answers the question.",
+            "Output ONLY a ```cypher\\n...\\n``` code block followed by a brief explanation. "
+            "Do not include any SQL or non-Cypher syntax.",
+        ]
+        if conventions:
+            parts.append(f"System conventions:\n{json.dumps(conventions, indent=2)}")
         if patterns:
-            patterns_str = "\n\nExample Cypher patterns:\n" + "\n---\n".join(patterns)
-        else:
-            patterns_str = ""
-        return conventions_str + patterns_str
+            parts.append("Example Cypher patterns:\n" + "\n---\n".join(patterns))
+        return "\n\n".join(parts)
 
     def _build_user_message(self, user_query: str, anchors: PlannerAnchors, schema_slice: str) -> str:
         return f"User query: {user_query}\nAnchors: {anchors}\nSchema: {schema_slice}"
