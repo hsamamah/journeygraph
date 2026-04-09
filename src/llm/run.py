@@ -50,7 +50,7 @@ from typing import TYPE_CHECKING
 
 from neo4j.exceptions import Neo4jError
 
-from src.common.config import get_llm_config
+from src.common.config import LLMConfig, get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
 from src.llm.anchor_clarifier import AnchorClarifier
@@ -62,6 +62,7 @@ from src.llm.slice_registry import SliceRegistry
 from src.llm.subgraph_builder import SubgraphBuilder
 from src.llm.cypher_validator import validate_and_log_cypher
 from src.llm.query_writer import run_query_writer
+from src.llm.text2cypher_output import Text2CypherOutput
 
 if TYPE_CHECKING:
     from src.llm.narration_output import NarrationOutput
@@ -309,6 +310,7 @@ def _run_query(
     *,
     registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int = 1,
     strategy: str = "topk",
     label: str | None = None,
@@ -331,6 +333,7 @@ def _run_query(
         query:            Raw query string.
         registry:         SliceRegistry — used by Query Writer path for
                           property whitelist validation.
+        llm_config:       LLMConfig — passed to QueryWriter for model/key.
         clarifier:        AnchorClarifier — fires only when station/route
                           anchors fail Lucene lookup.
         candidate_limit:  Max candidates per mention from full-text index.
@@ -401,24 +404,41 @@ def _run_query(
         )
 
     # ── Query Writer path ─────────────────────────────────────────────────────
+    t2c_output: Text2CypherOutput | None = None
+
     if planner_output.path in {"text2cypher", "both"}:
-        query_writer_output = run_query_writer(query, planner_output)
+        query_writer_output = run_query_writer(query, planner_output, llm_config)
         print("\n[Query Writer Output]")
         print("Cypher Query:\n", query_writer_output.cypher_query)
         print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
 
         schema_slice = registry.get(planner_output.schema_slice_key)
-        cypher_validator_result = validate_and_log_cypher(
+        val_result = validate_and_log_cypher(
             query_writer_output.cypher_query,
             schema_slice,
             schema_slice.property_registry,
             db.driver,
             log,
         )
-        if cypher_validator_result.errors:
-            print("Cypher Validator Errors - see logs for details.")
-        else:
+        if val_result.valid:
             print("Cypher Validator: Query is valid.")
+            t2c_output = Text2CypherOutput(
+                cypher=query_writer_output.cypher_query,
+                results=val_result.results or [],
+                domain=planner_output.domain,
+                attempt_count=1,
+                success=True,
+            )
+        else:
+            print("Cypher Validator Errors - see logs for details.")
+            t2c_output = Text2CypherOutput(
+                cypher="",
+                results=[],
+                domain=planner_output.domain,
+                attempt_count=1,
+                validation_notes=val_result.errors,
+                success=False,
+            )
 
     # ── Subgraph path ─────────────────────────────────────────────────────────
     sub_output: SubgraphOutput | None = None
@@ -444,13 +464,10 @@ def _run_query(
             print(_fmt_subgraph_verbose(sub_output))
 
     # ── Narration Agent ───────────────────────────────────────────────────────
-    # Query Writer output is not yet threaded into narration — t2c_output=None.
-    # The Narration Agent selects contextual mode (subgraph succeeded) or
-    # degraded (neither).
     narration_output = narration_agent.run(
         query,
         planner_output,
-        t2c_output=None,
+        t2c_output=t2c_output,
         subgraph_output=sub_output,
         resolutions=resolutions,
     )
@@ -469,6 +486,7 @@ def _mode_default(
     *,
     registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -479,6 +497,7 @@ def _mode_default(
         query,
         registry=registry,
         clarifier=clarifier,
+        llm_config=llm_config,
         candidate_limit=candidate_limit,
         strategy=strategy,
     )
@@ -491,6 +510,7 @@ def _mode_demo(
     *,
     registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -510,6 +530,7 @@ def _mode_demo(
             query,
             registry=registry,
             clarifier=clarifier,
+            llm_config=llm_config,
             candidate_limit=candidate_limit,
             strategy=strategy,
             label=label,
@@ -539,6 +560,7 @@ def _mode_repl(
     *,
     registry: SliceRegistry,
     clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
 ) -> None:
@@ -570,6 +592,7 @@ def _mode_repl(
             query,
             registry=registry,
             clarifier=clarifier,
+            llm_config=llm_config,
             candidate_limit=candidate_limit,
             strategy=strategy,
         )
@@ -579,13 +602,13 @@ def _mode_repl(
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 
-def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, AnchorClarifier, SliceRegistry]:
+def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, AnchorClarifier, SliceRegistry, LLMConfig]:
     """
     Initialise the full pipeline stack.
 
-    Returns (Planner, NarrationAgent, Neo4jManager, AnchorClarifier, SliceRegistry).
-    The Neo4j connection is held open across queries for the Subgraph path and
-    closed by main() on exit via the finally block.
+    Returns (Planner, NarrationAgent, Neo4jManager, AnchorClarifier,
+    SliceRegistry, LLMConfig). The Neo4j connection is held open across
+    queries and closed by main() on exit via the finally block.
 
     Sequencing:
       1. LLM config      — hard fail if ANTHROPIC_API_KEY missing
@@ -595,7 +618,7 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, An
       5. NarrationAgent  — builds Narration LLM instance
                            (LLM_NARRATION_MAX_TOKENS)
       6. AnchorClarifier — fetches station/route catalogue from graph once
-      7. Registry returned for Query Writer path property validation
+      7. Registry + LLMConfig returned for Query Writer path
     """
     llm_config = get_llm_config()
     log.info(
@@ -617,7 +640,7 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, An
     planner = Planner(registry, llm_config, strict=strict)
     narration_agent = NarrationAgent(llm_config)
     clarifier = AnchorClarifier(db, llm_config)
-    return planner, narration_agent, db, clarifier, registry
+    return planner, narration_agent, db, clarifier, registry, llm_config
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -643,7 +666,7 @@ def main(argv: list[str] | None = None) -> None:
         )
 
     try:
-        planner, narration_agent, db, clarifier, registry = _startup(strict=strict)
+        planner, narration_agent, db, clarifier, registry, llm_config = _startup(strict=strict)
     except (OSError, RuntimeError) as exc:
         log.error("Startup failed: %s", exc)
         sys.exit(1)
@@ -656,6 +679,7 @@ def main(argv: list[str] | None = None) -> None:
                 db,
                 registry=registry,
                 clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -666,6 +690,7 @@ def main(argv: list[str] | None = None) -> None:
                 db,
                 registry=registry,
                 clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )
@@ -677,6 +702,7 @@ def main(argv: list[str] | None = None) -> None:
                 args.query,
                 registry=registry,
                 clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
             )

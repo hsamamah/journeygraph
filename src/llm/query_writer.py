@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 import requests
-from typing import Any
+from typing import TYPE_CHECKING
 import json
 import os
 import glob
@@ -9,6 +11,10 @@ import re
 import anthropic
 
 from src.llm.planner_output import PlannerAnchors
+
+if TYPE_CHECKING:
+    from src.common.config import LLMConfig
+    from src.llm.planner_output import PlannerOutput
 
 @dataclass
 class QueryWriterInput:
@@ -25,18 +31,10 @@ class QueryWriterOutput:
 
 
 class QueryWriter:
-    # def __init__(self, logger=None):
-    #     self.logger = logger
-
-    # def run(self, input: QueryWriterInput) -> QueryWriterOutput:
-    #     result = call_neo4j_text2cypher(input.user_query, schema=input.schema_slice)
-    #     cypher_query = result.get("cypher", "")
-    #     cot_comments = result.get("reasoning", "")
-        # return QueryWriterOutput(cypher_query=cypher_query, cot_comments=cot_comments)
-    def __init__(self, llm=None, logger=None):
-        self.llm = llm  
-        self.logger = logger 
-        self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    def __init__(self, llm_config: LLMConfig) -> None:
+        self.client = anthropic.Anthropic(api_key=llm_config.anthropic_api_key)
+        self._model = llm_config.llm_model
+        self._max_tokens = llm_config.llm_max_tokens
 
     def run(self, input: QueryWriterInput) -> QueryWriterOutput:
         system_prompt = self._build_system_prompt(input.conventions, input.patterns)
@@ -44,8 +42,8 @@ class QueryWriter:
         prompt = f"{system_prompt}\n\n{user_message}"
 
         response = self.client.messages.create(
-            model="claude-haiku-4-5-20251001",  
-            max_tokens=1024,
+            model=self._model,
+            max_tokens=self._max_tokens,
             messages=[{"role": "user", "content": prompt}])
 
         cypher_query, cot_comments = self._parse_llm_response(response.content[0].text)
@@ -66,7 +64,7 @@ class QueryWriter:
             patterns_str = ""
         return conventions_str + patterns_str
 
-    def _build_user_message(self, user_query: str, anchors: Any, schema_slice: str) -> str:
+    def _build_user_message(self, user_query: str, anchors: PlannerAnchors, schema_slice: str) -> str:
         return f"User query: {user_query}\nAnchors: {anchors}\nSchema: {schema_slice}"
 
 def call_neo4j_text2cypher(query: str, schema: str = None, url: str = None, user: str = None, password: str = None) -> dict:
@@ -82,43 +80,31 @@ def call_neo4j_text2cypher(query: str, schema: str = None, url: str = None, user
     return resp.json()
 
 
-def run_query_writer(query, planner_output):
+def run_query_writer(query: str, planner_output: PlannerOutput, llm_config: LLMConfig) -> QueryWriterOutput:
     """
-    Helper to construct QueryWriterInput, load conventions/patterns, and run QueryWriter.
-    Loads all .cypher files (including constraints) from the relevant queries/<domain>/ folder.
-    Returns QueryWriterOutput.
-    """
-    QueryWriterInput_ = QueryWriterInput
-    QueryWriter_ = QueryWriter
+    Construct QueryWriterInput, load conventions/patterns, and run QueryWriter.
 
-    # Load conventions
+    Loads all .cypher files from the relevant queries/<domain>/ folder as
+    few-shot patterns. Falls back to queries/physical/ if the domain folder
+    doesn't exist.
+    """
     with open(os.path.join("src", "llm", "conventions.json")) as f:
         conventions = json.load(f)
 
-    # Determine the schema slice/domain folder
     domain = getattr(planner_output, "schema_slice_key", "physical")
     queries_dir = os.path.join("queries", domain)
-    patterns = []
+    patterns: list[str] = []
 
-    # Load all .cypher files in the domain's queries folder
-    if os.path.isdir(queries_dir):
-        for cypher_file in sorted(glob.glob(os.path.join(queries_dir, "*.cypher"))):
-            with open(cypher_file) as f:
-                content = f"\n// --- {os.path.basename(cypher_file)} ---\n" + f.read()
-                patterns.append(content)
-    else:
-        # Fallback to physical if domain folder doesn't exist
-        for cypher_file in sorted(glob.glob(os.path.join("queries", "physical", "*.cypher"))):
-            with open(cypher_file) as f:
-                content = f"\n// --- {os.path.basename(cypher_file)} ---\n" + f.read()
-                patterns.append(content)
+    source_dir = queries_dir if os.path.isdir(queries_dir) else os.path.join("queries", "physical")
+    for cypher_file in sorted(glob.glob(os.path.join(source_dir, "*.cypher"))):
+        with open(cypher_file) as f:
+            patterns.append(f"\n// --- {os.path.basename(cypher_file)} ---\n" + f.read())
 
-    query_writer_input = QueryWriterInput_(
+    query_writer_input = QueryWriterInput(
         user_query=query,
         anchors=planner_output.anchors,
         schema_slice=planner_output.schema_slice_key,
         patterns=patterns,
         conventions=conventions,
     )
-    query_writer = QueryWriter_()
-    return query_writer.run(query_writer_input)
+    return QueryWriter(llm_config).run(query_writer_input)
