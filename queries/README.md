@@ -8,6 +8,18 @@ Each subdirectory mirrors a layer. Files are split by purpose:
 
 ```
 queries/
+├── physical/
+│   ├── constraints.cypher       ← uniqueness constraints + full-text indexes (station name,
+│   │                               pathway name, pathway stop_desc, level name, route name)
+│   ├── nodes.cypher             ← Station, StationEntrance, Platform, BusStop, FareGate,
+│   │                               Pathway, Level; mode/zone multi-label migrations
+│   └── relationships.cypher     ← CONTAINS (Station→Entrance/Platform/FareGate),
+│                                   LINKS (directional stop-entity ↔ Pathway),
+│                                   ON_LEVEL (Pathway/node → Level), BELONGS_TO (Pathway → Station)
+├── accessibility/
+│   ├── constraints.cypher       ← composite_key uniqueness + status/unit_name/severity indexes
+│   ├── nodes.cypher             ← OutageEvent MERGE with ON CREATE / ON MATCH split
+│   └── relationships.cypher     ← AFFECTS (OutageEvent → Pathway)
 ├── fare/
 │   ├── constraints.cypher
 │   ├── nodes.cypher
@@ -20,10 +32,6 @@ queries/
 │   └── analytical.cypher        ← service-only queries (runnable now)
 ├── cross_layer/
 │   └── analytical.cypher        ← queries spanning service+physical+fare
-├── physical/
-│   ├── constraints.cypher       ← includes BusStop constraint + indexes
-│   ├── nodes.cypher
-│   └── relationships.cypher
 └── interruption/
     ├── constraints.cypher
     ├── nodes.cypher

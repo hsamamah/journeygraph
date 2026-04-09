@@ -41,16 +41,18 @@ class PlannerAnchors:
         routes:        Route names or line names e.g. ['Red Line', '70']
         dates:         Date references e.g. ['2026-03-15', 'yesterday']
         pathway_nodes: Pathway node references e.g. ['elevator at Metro Center']
+        levels:        Floor/level references e.g. ['street level', 'mezzanine', 'L2']
     """
 
     stations: list[str] = field(default_factory=list)
     routes: list[str] = field(default_factory=list)
     dates: list[str] = field(default_factory=list)
     pathway_nodes: list[str] = field(default_factory=list)
+    levels: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         """Return True if no anchors were extracted across all fields."""
-        return not any([self.stations, self.routes, self.dates, self.pathway_nodes])
+        return not any([self.stations, self.routes, self.dates, self.pathway_nodes, self.levels])
 
 
 @dataclass

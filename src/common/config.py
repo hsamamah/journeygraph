@@ -68,21 +68,28 @@ class LLMConfig:
     credentials. Only imported and called by src/llm/ code.
 
     Environment variables:
-        ANTHROPIC_API_KEY   Required. API key for the Anthropic client.
-        LLM_PROVIDER        Optional. Defaults to 'anthropic'.
-                            Used by llm_factory.py to select the LLM class.
-        LLM_MODEL           Optional. Defaults to 'claude-haiku-4-5-20251001'.
-                            Pinned snapshot string — not an alias — for
-                            stable, reproducible behaviour across releases.
-        LLM_MAX_TOKENS      Optional. Defaults to 512.
-                            Controls Stage 2 Planner call token budget.
-                            Increase if Planner responses are being truncated.
+        ANTHROPIC_API_KEY          Required. API key for the Anthropic client.
+        LLM_PROVIDER               Optional. Defaults to 'anthropic'.
+                                   Used by llm_factory.py to select the LLM class.
+        LLM_MODEL                  Optional. Defaults to 'claude-haiku-4-5-20251001'.
+                                   Pinned snapshot string — not an alias — for
+                                   stable, reproducible behaviour across releases.
+        LLM_MAX_TOKENS             Optional. Defaults to 512.
+                                   Controls Stage 2 Planner call token budget.
+                                   Increase if Planner responses are being truncated.
+        LLM_NARRATION_MAX_TOKENS   Optional. Defaults to 1024.
+                                   Controls NarrationAgent call token budget.
+                                   Kept separate from LLM_MAX_TOKENS because the
+                                   Narration Agent produces the final user-facing
+                                   answer and needs more headroom than the
+                                   lightweight Planner JSON call.
     """
 
     anthropic_api_key: str
     llm_provider: str
     llm_model: str
     llm_max_tokens: int
+    llm_narration_max_tokens: int
 
 
 def get_llm_config() -> LLMConfig:
@@ -96,4 +103,5 @@ def get_llm_config() -> LLMConfig:
         llm_provider=os.getenv("LLM_PROVIDER", "anthropic"),
         llm_model=os.getenv("LLM_MODEL", "claude-haiku-4-5-20251001"),
         llm_max_tokens=int(os.getenv("LLM_MAX_TOKENS", "512")),
+        llm_narration_max_tokens=int(os.getenv("LLM_NARRATION_MAX_TOKENS", "1024")),
     )

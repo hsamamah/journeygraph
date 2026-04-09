@@ -1,0 +1,69 @@
+# tests/eval/configs.yaml
+#
+# Named pipeline configurations for the eval harness.
+# The harness runs every question against every config listed here.
+#
+# Schema:
+#   name                  — identifier used in JSONL output and --config filter
+#   description           — human-readable label
+#   candidate_limit       — max candidates per anchor from full-text index
+#                           1 = baseline (disambiguation short-circuited)
+#                           >1 = disambiguation strategy fires
+#   strategy              — topk | coherence
+#                           topk: pick highest full-text score (default)
+#                           coherence: TypeWeightedCoherenceStrategy across anchor types
+#   force_path            — optional: subgraph | both | text2cypher
+#                           overrides planner's path decision after Stage 2
+#                           omit to let planner decide
+#   narration_max_tokens  — optional: override LLM_NARRATION_MAX_TOKENS for this run
+#                           omit to use env default (1024)
+
+# ── Anthropic pricing table ────────────────────────────────────────────────────
+# Cost per million tokens in USD. Used by run_harness.py to compute cost_usd.
+# Update when Anthropic changes pricing: https://www.anthropic.com/pricing
+# Cache token rates apply when prompt caching is active (cache_* fields in usage).
+pricing:
+  claude-haiku-4-5-20251001:
+    input_per_mtok: 0.80
+    output_per_mtok: 4.00
+    cache_write_per_mtok: 1.00
+    cache_read_per_mtok: 0.08
+  claude-sonnet-4-6:
+    input_per_mtok: 3.00
+    output_per_mtok: 15.00
+    cache_write_per_mtok: 3.75
+    cache_read_per_mtok: 0.30
+  claude-opus-4-6:
+    input_per_mtok: 15.00
+    output_per_mtok: 75.00
+    cache_write_per_mtok: 18.75
+    cache_read_per_mtok: 1.50
+
+configs:
+  - name: default
+    description: Baseline — planner decides everything, single candidate, topk
+    candidate_limit: 1
+    strategy: topk
+
+  - name: high_candidates
+    description: Wider candidate pool with coherence-based disambiguation
+    candidate_limit: 5
+    strategy: coherence
+
+  - name: force_subgraph
+    description: Force subgraph path regardless of planner decision
+    candidate_limit: 1
+    strategy: topk
+    force_path: subgraph
+
+  - name: force_both
+    description: Force both paths (subgraph + text2cypher placeholder)
+    candidate_limit: 1
+    strategy: topk
+    force_path: both
+
+  - name: tight_budget
+    description: Reduced narration token budget (512 vs default 1024) — tests answer truncation
+    candidate_limit: 1
+    strategy: topk
+    narration_max_tokens: 512

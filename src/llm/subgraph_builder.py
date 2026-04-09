@@ -90,7 +90,13 @@ class SubgraphBuilder:
         try:
             return self._run(resolutions, domain, cfg)
         except Exception as exc:
-            log.exception("subgraph_builder | unhandled exception | domain=%s", domain)
+            log.error(
+                "subgraph_builder | unhandled exception | %s: %s | domain=%s",
+                type(exc).__name__,
+                exc,
+                domain,
+                exc_info=True,
+            )
             return SubgraphOutput(
                 context="",
                 node_count=0,

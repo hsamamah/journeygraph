@@ -493,8 +493,10 @@ llm = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "psutil" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "pyyaml" },
     { name = "ruff" },
 ]
 
@@ -518,8 +520,10 @@ provides-extras = ["llm", "demo"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "psutil", specifier = ">=7.2.2" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ruff", specifier = ">=0.9.0" },
 ]
 

@@ -19,6 +19,11 @@ Load order (respects foreign key dependencies):
   11. (stop_entity) -[:LINKS]-> Pathway   (from_stop direction, all 5 entity types)
   12. Pathway -[:LINKS]-> (stop_entity)   (to_stop direction, all 5 entity types)
   13. Pathway -[:LINKS]-> Pathway         (chain via deferred generic node pivot)
+  14. (stop_entity) -[:ON_LEVEL]-> Level  (all stop types with level_id)
+  15. Pathway -[:ON_LEVEL]-> Level        (elevators + same-level pathways)
+  16. Pathway -[:STARTING_LEVEL]-> Level  (escalators + multi-level pathways)
+  17. Pathway -[:ENDING_LEVEL]-> Level    (escalators + multi-level pathways)
+  18. Station -[:CONTAINS]-> Pathway      (derived: via intermediate + direct LINKS)
 
 Cypher is stored in queries/physical/ and loaded at runtime — no
 inline Cypher strings in this module.
@@ -40,6 +45,8 @@ log = get_logger(__name__)
 
 # Resolve Cypher query files relative to repo root
 _QUERY_DIR = Path(__file__).parents[3] / "queries" / "physical"
+
+_LEVEL_REL_BATCH_SIZE = 500
 
 # ── Cypher file helpers ────────────────────────────────────────────────────────
 
@@ -241,6 +248,65 @@ def _load_pathway_chain_links(neo4j: Neo4jManager, chains: pd.DataFrame) -> None
     )
 
 
+def _load_stop_on_level(neo4j: Neo4jManager, stop_on_level: pd.DataFrame) -> None:
+    if stop_on_level.empty:
+        log.warning("physical load: (stop_entity) -[:ON_LEVEL]-> Level — 0 rows, skipping")
+        return
+    log.info(
+        "physical load: (stop_entity) -[:ON_LEVEL]-> Level (%d rels)", len(stop_on_level)
+    )
+    stmt = _extract_statement(_load_query("relationships.cypher"), "(stop_entity) -[:ON_LEVEL]-> Level")
+    neo4j.batch_write(stmt, df_to_rows(stop_on_level), batch_size=_LEVEL_REL_BATCH_SIZE, label="ON_LEVEL(stop)")
+
+
+def _load_pathway_on_level(
+    neo4j: Neo4jManager,
+    on_level: pd.DataFrame,
+    starting_level: pd.DataFrame,
+    ending_level: pd.DataFrame,
+) -> None:
+    rel_cypher = _load_query("relationships.cypher")
+    for hint, df, rel_type in [
+        ("Pathway -[:ON_LEVEL]-> Level", on_level, "ON_LEVEL"),
+        ("Pathway -[:STARTING_LEVEL]-> Level", starting_level, "STARTING_LEVEL"),
+        ("Pathway -[:ENDING_LEVEL]-> Level", ending_level, "ENDING_LEVEL"),
+    ]:
+        if df.empty:
+            log.info("physical load: Pathway -[:%s]-> Level — 0 rows, skipping", rel_type)
+            continue
+        log.info("physical load: Pathway -[:%s]-> Level (%d rels)", rel_type, len(df))
+        stmt = _extract_statement(rel_cypher, hint)
+        neo4j.batch_write(stmt, df_to_rows(df), batch_size=_LEVEL_REL_BATCH_SIZE, label=rel_type)
+
+
+def _derive_station_contains_pathway(neo4j: Neo4jManager) -> None:
+    """
+    Derive Station -[:CONTAINS]-> Pathway shortcuts after all LINKS and
+    CONTAINS edges are committed.
+
+    Two passes — both are idempotent via MERGE:
+      Path 1: Station → CONTAINS → intermediate → LINKS ↔ Pathway
+      Path 2: Station ↔ LINKS ↔ Pathway  (DEFERRED-node pivot pathways)
+
+    Cross-station pathways receive CONTAINS from both stations; this is
+    intentional — such a pathway is physically accessible from both.
+    """
+    rel_cypher = _load_query("relationships.cypher")
+
+    stmt_via_intermediate = _extract_statement(
+        rel_cypher, "Station -[:CONTAINS]-> Pathway via intermediate"
+    )
+    stmt_direct = _extract_statement(
+        rel_cypher, "Station -[:CONTAINS]-> Pathway direct"
+    )
+
+    log.info("physical load: deriving Station -[:CONTAINS]-> Pathway (via intermediate)")
+    neo4j.execute_write(stmt_via_intermediate)
+
+    log.info("physical load: deriving Station -[:CONTAINS]-> Pathway (direct LINKS)")
+    neo4j.execute_write(stmt_direct)
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 
@@ -266,6 +332,10 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     from_links = result["from_links"]
     to_links = result["to_links"]
     pathway_chain_links = result["pathway_chain_links"]
+    stop_on_level = result["stop_on_level"]
+    pathway_on_level = result["pathway_on_level"]
+    pathway_starting_level = result["pathway_starting_level"]
+    pathway_ending_level = result["pathway_ending_level"]
 
     # Shared FeedInfo node (idempotent — safe if already created by another layer)
     ensure_feed_info(neo4j, result["feed_info"])
@@ -292,6 +362,15 @@ def run(result: dict[str, pd.DataFrame], neo4j: Neo4jManager) -> None:
     _load_from_links(neo4j, from_links)
     _load_to_links(neo4j, to_links)
     _load_pathway_chain_links(neo4j, pathway_chain_links)
+
+    # ── Level relationships ───────────────────────────────────────────────────
+    # Must run after all stop nodes and Pathway nodes are committed.
+    # Level nodes are written in _load_levels() above, so all MATCH targets exist.
+    _load_stop_on_level(neo4j, stop_on_level)
+    _load_pathway_on_level(neo4j, pathway_on_level, pathway_starting_level, pathway_ending_level)
+
+    # Derived shortcuts — must run after all CONTAINS and LINKS edges exist
+    _derive_station_contains_pathway(neo4j)
 
     # ── Post-load validation ───────────────────────────────────────────────────
     log.info("physical load: running post-load validation")

@@ -11,23 +11,23 @@ MERGE (s:Station {id: row.id})
 SET s.name = row.name, s.location = row.location;
 
 // ── :StationEntrance ───────────────────────────────────────────────────────
-// $rows: [{id, name, location, wheelchair_accessible, level}]
+// $rows: [{id, name, location, wheelchair_accessible}]
+// level is conveyed via ON_LEVEL relationship — see relationships.cypher.
 UNWIND $rows AS row
 MERGE (e:StationEntrance {id: row.id})
 SET
   e.name = row.name,
   e.location = row.location,
-  e.wheelchair_accessible = row.wheelchair_accessible,
-  e.level = row.level;
+  e.wheelchair_accessible = row.wheelchair_accessible;
 
 // ── :Platform ──────────────────────────────────────────────────────────────
-// $rows: [{id, name, lines_accessible, level}]
+// $rows: [{id, name, lines_accessible}]
+// level is conveyed via ON_LEVEL relationship — see relationships.cypher.
 UNWIND $rows AS row
 MERGE (p:Platform {id: row.id})
 SET
   p.name = row.name,
-  p.lines_accessible = row.lines_accessible,
-  p.level = row.level;
+  p.lines_accessible = row.lines_accessible;
 
 // ── :BusStop ───────────────────────────────────────────────────────────────
 // $rows: [{id, name, location}]
@@ -53,6 +53,8 @@ MERGE (pw:Pathway {id: row.id})
 SET
   pw.from_stop_id = row.from_stop_id,
   pw.to_stop_id = row.to_stop_id,
+  pw.from_stop_desc = row.from_stop_desc,
+  pw.to_stop_desc = row.to_stop_desc,
   pw.mode = row.mode,
   pw.is_bidirectional = row.is_bidirectional,
   pw.zone = row.zone,

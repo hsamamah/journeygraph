@@ -50,7 +50,7 @@ def main():
     resolutions2 = resolver.resolve(anchors2)
     print("resolved_stations:", resolutions2.resolved_stations)
     print("resolved_routes:  ", resolutions2.resolved_routes)
-    # Expected: {'Metro Center': ['STN_A01_C01']}  ← single-element list
+    # Expected: {'Metro Center': ['STN_A01_C01', 'STN_A10']}  ← coherence surfaces tied candidates
     #           {'Red Line': ['RED']}
 
     db.close()

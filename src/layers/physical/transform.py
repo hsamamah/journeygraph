@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 
 from src.common.logger import get_logger
-from src.common.utils import clean_str, safe_int
 from src.layers.physical.endpoint_classifier import EndpointClass, classify_endpoints
 
 log = get_logger(__name__)
@@ -36,18 +35,186 @@ PATHWAY_MODES = {
 FAREGATE_MODES = {6, 7}
 
 
-def get_level_description(level_id):
-    if pd.isna(level_id) or clean_str(level_id) is None:
-        return "Level Not specified"
-    level_indicator = str(level_id).split("_")[-1]
-    level_mapping = {
-        "L0": "Street Level",
-        "L1": "Mezzanine/Fare Control",
-        "L2": "Platform Level",
-        "L3": "Lower Platform/Deep Level",
-        "UL1": "Upper Level (Above Ground)",
+
+def _build_stop_on_level(stops_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns DataFrame[stop_id, level_id] for every stop that has a level_id.
+    Covers Station, StationEntrance, Platform, FareGate — all stop types
+    present in stops.txt with a non-null level value.
+    """
+    has_level = stops_df[stops_df["level"].notna()][["id", "level"]].copy()
+    return (
+        has_level
+        .rename(columns={"id": "stop_id", "level": "level_id"})
+        .drop_duplicates()
+        .reset_index(drop=True)
+    )
+
+
+def _build_pathway_on_level(
+    pathways_df: pd.DataFrame,
+    stops_df: pd.DataFrame,
+    levels_df: pd.DataFrame,
+) -> dict[str, pd.DataFrame]:
+    """
+    Build level-relationship frames for all Pathway nodes.
+
+    Three relationship types are returned, keyed by relationship name:
+
+      on_level        — Pathway -[:ON_LEVEL]-> Level
+                        Used for elevators (all levels in the traversed range)
+                        and pathways whose endpoints share the same level.
+
+      starting_level  — Pathway -[:STARTING_LEVEL]-> Level
+                        Used for escalators and multi-level walkways/stairs
+                        (the level at from_stop_id).
+
+      ending_level    — Pathway -[:ENDING_LEVEL]-> Level
+                        Used for escalators and multi-level walkways/stairs
+                        (the level at to_stop_id).
+
+    Elevator range derivation (Option B):
+        GTFS records only the two terminal stops of an elevator. A single
+        elevator that serves L0→L2 is modelled as one pathway, but physically
+        crosses L0, L1, and L2. For each elevator, all Level nodes at the same
+        station with a level_index between the two endpoint indices (inclusive)
+        are emitted as ON_LEVEL targets.
+
+    Escalators always use STARTING_LEVEL / ENDING_LEVEL (direction matters).
+    Walkways (mode=1) and other non-elevator modes check whether both endpoints
+    share the same level: same → ON_LEVEL; different → STARTING/ENDING_LEVEL.
+    """
+    # ── Lookup tables ─────────────────────────────────────────────────────────
+    stop_to_level: dict[str, str] = (
+        stops_df.dropna(subset=["level"]).set_index("id")["level"].to_dict()
+    )
+
+    # level_id → level_index (vectorised, no iterrows)
+    level_to_index: dict[str, int | None] = dict(zip(
+        levels_df["level_id"],
+        pd.to_numeric(levels_df["level_index"], errors="coerce"),
+    ))
+
+    # station_id for each stop: the stop itself if location_type == 1,
+    # otherwise its parent_station.
+    _lt = stops_df["location_type"]
+    _ps = stops_df.get("parent_station", pd.Series(dtype=str, index=stops_df.index))
+    station_col = np.where(_lt == 1, stops_df["id"], _ps)
+    # None out blank/NaN parent values
+    station_col = pd.array(station_col, dtype=object)
+    _blank = pd.isna(station_col) | (station_col == "")
+    station_col = np.where(_blank, None, station_col)
+
+    stop_to_station: dict[str, str | None] = dict(zip(stops_df["id"], station_col))
+
+    # station_id → sorted list of level_ids (ascending level_index), vectorised
+    _with_level = stops_df[stops_df["level"].notna()].copy()
+    _with_level["_station_id"] = _with_level["id"].map(stop_to_station)
+    _with_level = _with_level[_with_level["_station_id"].notna()]
+    station_level_sets: dict[str, set[str]] = (
+        _with_level.groupby("_station_id")["level"].apply(set).to_dict()
+    )
+    station_sorted_levels: dict[str, list[str]] = {
+        sid: sorted(lids, key=lambda l: (level_to_index.get(l) or 0))
+        for sid, lids in station_level_sets.items()
     }
-    return level_mapping.get(level_indicator, f"Unknown Level ({level_indicator})")
+
+    # ── Augment pathway frame ──────────────────────────────────────────────────
+    pw = pathways_df[["id", "mode", "from_stop_id", "to_stop_id"]].copy()
+    pw["from_level_id"] = pw["from_stop_id"].map(stop_to_level)
+    pw["to_level_id"] = pw["to_stop_id"].map(stop_to_level)
+    pw["from_level_index"] = pw["from_level_id"].map(level_to_index)
+    pw["to_level_index"] = pw["to_level_id"].map(level_to_index)
+    pw["mode_int"] = pd.to_numeric(pw["mode"], errors="coerce")
+    pw["station_id"] = pw["from_stop_id"].map(stop_to_station).fillna(
+        pw["to_stop_id"].map(stop_to_station)
+    )
+
+    # ── Vectorised level-relationship classification ───────────────────────────
+    # Only rows with at least one resolved level endpoint are relevant.
+    has_from = pw["from_level_id"].notna()
+    has_to   = pw["to_level_id"].notna()
+    pw_v = pw[has_from | has_to].copy()
+
+    hf = pw_v["from_level_id"].notna()
+    ht = pw_v["to_level_id"].notna()
+    same_lvl = (
+        (pw_v["from_level_id"] == pw_v["to_level_id"])
+        | (pw_v["from_level_index"] == pw_v["to_level_index"])
+    )
+    m = pw_v["mode_int"]
+
+    # Helper: rename id→pathway_id and level column→level_id
+    def _pairs(mask: pd.Series, level_col: str) -> pd.DataFrame:
+        return (
+            pw_v[mask][["id", level_col]]
+            .rename(columns={"id": "pathway_id", level_col: "level_id"})
+        )
+
+    # ── Escalator (mode 4): always directional ────────────────────────────────
+    esc = m == 4
+    starting_frames = [_pairs(esc & hf, "from_level_id")]
+    ending_frames   = [_pairs(esc & ht, "to_level_id")]
+
+    # ── Non-elevator, non-escalator (walkways, stairs, etc.) ─────────────────
+    other = (m != 4) & (m != 5)
+    one_ep = hf ^ ht  # exactly one endpoint resolved
+    on_level_frames = [
+        _pairs(other & one_ep & hf, "from_level_id"),
+        _pairs(other & one_ep & ht, "to_level_id"),
+        _pairs(other & hf & ht & same_lvl, "from_level_id"),
+    ]
+    span = other & hf & ht & ~same_lvl
+    starting_frames.append(_pairs(span, "from_level_id"))
+    ending_frames.append(_pairs(span, "to_level_id"))
+
+    # ── Elevator (mode 5) ─────────────────────────────────────────────────────
+    elev = m == 5
+    on_level_frames += [
+        _pairs(elev & one_ep & hf, "from_level_id"),
+        _pairs(elev & one_ep & ht, "to_level_id"),
+        _pairs(elev & hf & ht & same_lvl, "from_level_id"),
+    ]
+
+    # Multi-level elevators: variable output rows — iterrows only on this subset
+    elev_multi_rows: list[dict] = []
+    for _, row in pw_v[elev & hf & ht & ~same_lvl].iterrows():
+        pid       = row["id"]
+        from_lid  = row["from_level_id"]
+        to_lid    = row["to_level_id"]
+        from_idx  = row["from_level_index"] if pd.notna(row["from_level_index"]) else None
+        to_idx    = row["to_level_index"]   if pd.notna(row["to_level_index"])   else None
+        station_id = row["station_id"]      if pd.notna(row["station_id"])       else None
+        min_idx = min(from_idx or 0, to_idx or 0)
+        max_idx = max(from_idx or 0, to_idx or 0)
+        if station_id and station_id in station_sorted_levels:
+            crossed = [
+                lid
+                for lid in station_sorted_levels[station_id]
+                if level_to_index.get(lid) is not None
+                and min_idx <= level_to_index[lid] <= max_idx
+            ]
+        else:
+            crossed = list({from_lid, to_lid})
+        for lid in crossed:
+            elev_multi_rows.append({"pathway_id": pid, "level_id": lid})
+
+    if elev_multi_rows:
+        on_level_frames.append(pd.DataFrame(elev_multi_rows))
+
+    _empty = pd.DataFrame(columns=["pathway_id", "level_id"])
+
+    def _merge_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+        non_empty = [f for f in frames if not f.empty]
+        if not non_empty:
+            return _empty
+        return pd.concat(non_empty, ignore_index=True).drop_duplicates().reset_index(drop=True)
+
+    return {
+        "on_level": _merge_frames(on_level_frames),
+        "starting_level": _merge_frames(starting_frames),
+        "ending_level": _merge_frames(ending_frames),
+    }
 
 
 def _partition_by_node_type(
@@ -89,7 +256,7 @@ def _partition_by_node_type(
             df["stop_id"].str.contains("_FG_", na=False)
         ][["pathway_id", "stop_id"]].drop_duplicates().copy(),
         "BUS_STOP": df[
-            df["stop_id"].apply(safe_int).notnull()
+            pd.to_numeric(df["stop_id"], errors="coerce").notna()
             & ~df["stop_id"].str.contains("_FG_", na=False)
             & ~df["stop_id"].str.upper().str.startswith("PF_", na=False)
         ][["pathway_id", "stop_id"]].drop_duplicates().copy(),
@@ -114,9 +281,6 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     if "level_id" in stops_df:
         stops_df["level_id"] = _clean_col(stops_df["level_id"])
 
-    # Add level description
-    stops_df["level_description"] = stops_df["level_id"].apply(get_level_description)
-
     # Rename columns for ERD compatibility
     stops_df = stops_df.rename(
         columns={
@@ -133,7 +297,7 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     # Tag bus vs rail stops — exclude location_type=3 (generic nodes) to prevent
     # them being misclassified as MATCHED endpoints instead of DEFERRED pivots.
     bus_stops = stops_df[
-        stops_df["id"].apply(safe_int).notnull() & (stops_df["location_type"] != 3)
+        pd.to_numeric(stops_df["id"], errors="coerce").notna() & (stops_df["location_type"] != 3)
     ].copy()
     stations = stops_df[stops_df["location_type"] == _LOC_STATION].copy()
 
@@ -170,7 +334,7 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
     # Pathway mode description
     pathways_df["mode_description"] = (
-        pathways_df["mode"].apply(safe_int).map(PATHWAY_MODES)
+        pd.to_numeric(pathways_df["mode"], errors="coerce").map(PATHWAY_MODES)
     )
 
     # Partition stops by location_type
@@ -220,7 +384,7 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     # if one endpoint is UNPAID and neither is PAID → pregate_internal (Unpaid).
     # Pathways where both endpoints are UNKNOWN (deep mezzanine hops) cannot be
     # zone-classified without graph traversal and remain mixed_non_gate for now.
-    mode = pathways_df["mode"].apply(safe_int).fillna(-1).astype(int)
+    mode = pd.to_numeric(pathways_df["mode"], errors="coerce").fillna(-1).astype(int)
     fs = pathways_df["from_side"]
     ts = pathways_df["to_side"]
     pathways_df["side_category"] = np.select(
@@ -240,20 +404,13 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     pathways_df["zone"] = pathways_df["side_category"].map(_zone_map)
 
     # Add stop descriptions for from_stop_id and to_stop_id
-    from_desc_map = stops_df.set_index("id")["desc"]
-    to_desc_map = stops_df.set_index("id")["desc"]
-    pathways_df["from_stop_desc"] = pathways_df["from_stop_id"].str.strip().map(from_desc_map)
-    pathways_df["to_stop_desc"]   = pathways_df["to_stop_id"].str.strip().map(to_desc_map)
-
-    # Add level info for from/to stops
-    from_level_map = stops_df.set_index("id")["level_description"]
-    to_level_map = stops_df.set_index("id")["level_description"]
-    pathways_df["from_level_description"] = pathways_df["from_stop_id"].str.strip().map(from_level_map)
-    pathways_df["to_level_description"]   = pathways_df["to_stop_id"].str.strip().map(to_level_map)
+    desc_map = stops_df.set_index("id")["desc"]
+    pathways_df["from_stop_desc"] = pathways_df["from_stop_id"].str.strip().map(desc_map)
+    pathways_df["to_stop_desc"]   = pathways_df["to_stop_id"].str.strip().map(desc_map)
 
     # ── Endpoint classification ───────────────────────────────────────────────
     pathways_df["is_bidirectional"] = (
-        pathways_df["is_bidirectional"].apply(safe_int).fillna(0).astype(int)
+        pd.to_numeric(pathways_df["is_bidirectional"], errors="coerce").fillna(0).astype(int)
     )
 
     partition_id_sets = {
@@ -370,6 +527,10 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
 
     pathway_chain_links = forward_chains
 
+    # ── Level relationship frames ──────────────────────────────────────────────
+    stop_on_level = _build_stop_on_level(stops_df)
+    pathway_level_rels = _build_pathway_on_level(pathways_df, stops_df, levels_df)
+
     # Partition pathways
     fare_boundary_edges = pathways_df[pathways_df["mode"].isin(FAREGATE_MODES)].copy()
     pre_gate_edges = pathways_df[
@@ -405,4 +566,8 @@ def run(raw: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         "to_links": to_links,
         "pathway_chain_links": pathway_chain_links,
         "endpoint_classifications": endpoint_classifications,
+        "stop_on_level": stop_on_level,
+        "pathway_on_level": pathway_level_rels["on_level"],
+        "pathway_starting_level": pathway_level_rels["starting_level"],
+        "pathway_ending_level": pathway_level_rels["ending_level"],
     }

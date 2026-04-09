@@ -44,14 +44,22 @@ CREATE INDEX physical_pathway_zone IF NOT EXISTS
 FOR (n:Pathway)
 ON (n.zone);
 
-CREATE FULLTEXT INDEX physical_station_name
+CREATE FULLTEXT INDEX physical_station_name IF NOT EXISTS
 FOR (n:Station)
 ON EACH [n.name];
 
-CREATE FULLTEXT INDEX physical_route_name
+CREATE FULLTEXT INDEX physical_route_name IF NOT EXISTS
 FOR (n:Route)
 ON EACH [n.route_short_name, n.route_long_name];
 
-CREATE FULLTEXT INDEX physical_pathway_name
+CREATE FULLTEXT INDEX physical_pathway_name IF NOT EXISTS
 FOR (n:Pathway)
 ON EACH [n.name];
+
+CREATE FULLTEXT INDEX physical_pathway_stop_desc IF NOT EXISTS
+FOR (n:Pathway)
+ON EACH [n.from_stop_desc, n.to_stop_desc];
+
+CREATE FULLTEXT INDEX physical_level_name IF NOT EXISTS
+FOR (n:Level)
+ON EACH [n.level_name];
