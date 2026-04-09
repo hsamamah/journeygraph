@@ -2,28 +2,23 @@
 #
 # Schema slice for transfer point impact analysis.
 #
-# Core question: which trips were cancelled on a given date and which
-# transfer opportunities did those cancellations break?
+# Core question: which trips were skipped/cancelled on a given date and which
+# transfer opportunities did those interruptions break?
 #
-# Key traversal: cancellations on a date → affected trips → scheduled
+# Key traversal: interruptions on a date → affected trips → scheduled
 # platforms → other trips scheduled at the same platform (transfer partners).
 #
 # Park (2023) alignment: multi-hop graph traversal over the static baseline
-# (SCHEDULED_AT) overlaid with the Interruption layer. The static graph is
-# untouched; cancellations are read from the overlay.
+# (SCHEDULED_AT) overlaid with the Interruption layer.
 
 domain: transfer_impact
 
-# ── Node label whitelist ──────────────────────────────────────────────────────
-# Exact label strings the LLM may reference. Multi-labels use colon notation.
-# Acts as a whitelist for Cypher Validator check 2 (future branch).
+# ── Required node labels ──────────────────────────────────────────────────────
+# Static structural nodes — always present after base pipeline layers load.
+# Checked against db.labels() at startup; strict mode fails if any are absent.
 nodes:
-  # NOTE: :Interruption:Cancellation is absent from the live graph — no
-  # CANCELED TripUpdates have been ingested yet. Re-add when cancellation
-  # data flows through the interruption layer.
-  # - ":Interruption:Cancellation"
-  - ":Interruption:Skip"
   - ":Trip"
+  - ":RoutePattern"
   - ":Route"
   - ":Route:Rail"
   - ":Route:Bus"
@@ -31,36 +26,35 @@ nodes:
   - ":Platform"
   - ":Date"
 
+# ── Optional node labels ──────────────────────────────────────────────────────
+# RT-derived overlay nodes — absent on a fresh DB until the interruption layer
+# runs. Never checked against db.labels(). All relationships touching these
+# nodes are automatically treated as optional too.
+nodes_optional:
+  - ":Interruption:Skip"
+  - ":Interruption:Cancellation"  # no CANCELED TripUpdates ingested yet
+
 # ── Relationship triples ──────────────────────────────────────────────────────
-# Directed triples (from → type → to). Relationship type validated against
-# db.relationshipTypes() at startup. Direction prevents reversed arrows in
-# generated Cypher.
+# Static-to-static relationships always present after base layers load.
+# Relationships touching optional nodes are auto-derived as optional.
 relationships:
-  - { from: "Route", type: "SERVES", to: "Station" }
-  - { from: "Date",         type: "ON_DATE",       to: "Interruption"  }
+  - { from: "Date",         type: "ON_DATE",      to: "Interruption"  }
   - { from: "Interruption", type: "AFFECTS_TRIP",  to: "Trip"          }
   - { from: "Interruption", type: "AFFECTS_ROUTE", to: "Route"         }
-  # NOTE: AFFECTS_STOP absent from live graph — re-add when stop-level
-  # interruption linking is active.
-  # - { from: "Interruption", type: "AFFECTS_STOP",  to: "Station"       }
   - { from: "Trip",         type: "SCHEDULED_AT",  to: "Platform"      }
   - { from: "Trip",         type: "FOLLOWS",       to: "RoutePattern"  }
   - { from: "RoutePattern", type: "BELONGS_TO",    to: "Route"         }
-  - { from: "Trip",         type: "OPERATED_ON",   to: "ServicePattern"}
+  - { from: "Station",      type: "CONTAINS",      to: "Platform"      }
 
 # ── Traversal patterns ────────────────────────────────────────────────────────
-# Pseudo-Cypher few-shot templates. Encode the multi-hop structure required
-# for this domain. Injected into Query Writer prompt as examples.
 patterns:
+  - "(:Date)<-[:ON_DATE]-(:Interruption:Skip)-[:AFFECTS_TRIP]->(:Trip)"
   - "(:Date)<-[:ON_DATE]-(:Interruption:Cancellation)-[:AFFECTS_TRIP]->(:Trip)"
   - "(:Trip)-[:SCHEDULED_AT]->(:Platform)<-[:SCHEDULED_AT]-(:Trip)"
 
 # ── WMATA-specific warnings ───────────────────────────────────────────────────
-# Data quirks from CONVENTIONS.md. Injected directly into Query Writer prompt.
-# In a future lexicological KG layer these can be expanded from simple strings
-# to chunked documents from the WMATA developer portal.
 warnings:
-  - "Use :Cancellation label directly — do not filter WHERE interruption_type='cancellation'"
+  - "WMATA currently produces :Skip interruptions, not :Cancellation — queries for 'cancelled trips' should use :Interruption:Skip"
   - "Transfer partners are found via shared Platform on SCHEDULED_AT, not a TRANSFERS relationship — no transfers.txt in WMATA feed"
   - "Trip has no mode label — traverse FOLLOWS->RoutePattern->BELONGS_TO->:Route:Bus|:Rail to determine mode"
   - "SCHEDULED_AT carries arrival_time and departure_time as relationship properties, not node properties"

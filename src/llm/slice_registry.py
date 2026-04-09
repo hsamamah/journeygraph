@@ -117,6 +117,12 @@ class SchemaSlice:
     relationships: list[RelationshipTriple]
     patterns: list[str]
     warnings: list[str]
+    # Optional schema: valid per the WMATA data model but may be absent from the
+    # live graph (e.g. no cancellations ingested yet). Included in the validator
+    # whitelist so generated Cypher passes; never checked against db.labels() /
+    # db.relationshipTypes(), so they never trigger strict-mode failures.
+    nodes_optional: list[str] = field(default_factory=list)
+    relationships_optional: list[RelationshipTriple] = field(default_factory=list)
     property_registry: dict[str, list[str]] = field(default_factory=dict)
 
 
@@ -286,13 +292,17 @@ class SliceRegistry:
         db_labels: set[str] = {row["label"] for row in label_rows}
         db_rel_types: set[str] = {row["relationshipType"] for row in rel_rows}
 
-        # db.schema.nodeTypeProperties() returns nodeType as e.g. ":`Trip`"
-        # Strip the leading colon and backticks to get the plain label name.
+        # db.schema.nodeTypeProperties() returns nodeType as e.g. ":`Trip`" for
+        # single-label nodes and ":`Delay`:`Interruption`" (alphabetical) for
+        # multi-label nodes. Strip decorators and fan out properties to every
+        # individual label component so slice scoping finds them by single label.
         property_registry: dict[str, list[str]] = {}
         for row in prop_rows:
-            label = row["nodeType"].lstrip(":").replace("`", "")
+            raw_type = row["nodeType"].replace("`", "")
             prop = row["propertyName"]
-            property_registry.setdefault(label, []).append(prop)
+            for part in raw_type.split(":"):
+                if part:
+                    property_registry.setdefault(part, []).append(prop)
 
         log.debug(
             "DB schema fetched — %d label(s), %d rel type(s), "
@@ -315,14 +325,28 @@ class SliceRegistry:
         """
         Collect label and relationship type validation issues for one slice.
 
+        Only checks required nodes (nodes:) and required relationships
+        (relationships:). Optional nodes/relationships are never checked
+        against the live graph — their absence is expected on a fresh DB.
+
+        Relationship optionality is derived automatically: any relationship
+        where from or to matches an optional node label is skipped here.
+
         Returns a list of warning message strings. The caller decides whether
         to log them (default) or raise on them (strict).
         """
         issues: list[str] = []
 
-        # Check 2: label validity
+        # Build optional label set for relationship skip logic below
+        optional_labels: set[str] = {
+            lbl
+            for node_label in raw.get("nodes_optional", [])
+            for lbl in node_label.lstrip(":").split(":")
+            if lbl
+        }
+
+        # Check 2: label validity (required nodes only)
         for node_label in raw.get("nodes", []):
-            # ":Interruption:Cancellation" → ["Interruption", "Cancellation"]
             individual_labels = [
                 lbl for lbl in node_label.lstrip(":").split(":") if lbl
             ]
@@ -334,10 +358,14 @@ class SliceRegistry:
                         "The owning layer may not have been loaded yet."
                     )
 
-        # Check 3: relationship type validity
+        # Check 3: relationship type validity (skip auto-optional relationships)
         for rel_entry in raw.get("relationships", []):
             if not isinstance(rel_entry, dict):
-                continue  # malformed entries caught elsewhere
+                continue
+            from_lbl = rel_entry.get("from", "")
+            to_lbl = rel_entry.get("to", "")
+            if from_lbl in optional_labels or to_lbl in optional_labels:
+                continue  # auto-optional — not checked against live graph
             rel_type = rel_entry.get("type", "")
             if rel_type and rel_type not in db_rel_types:
                 issues.append(
@@ -374,31 +402,53 @@ class SliceRegistry:
         validation. The property_registry is scoped to this slice's labels.
         """
         nodes: list[str] = raw.get("nodes", [])
+        nodes_optional: list[str] = raw.get("nodes_optional", [])
 
-        # Parse relationship triples
+        def _parse_rel_triples(entries: list, section: str) -> list[RelationshipTriple]:
+            triples: list[RelationshipTriple] = []
+            for entry in entries:
+                if not isinstance(entry, dict) or not all(
+                    k in entry for k in ("from", "type", "to")
+                ):
+                    log.warning(
+                        "Slice '%s': skipping malformed %s entry: %s. "
+                        "Expected keys: from, type, to.",
+                        domain,
+                        section,
+                        entry,
+                    )
+                    continue
+                triples.append(
+                    RelationshipTriple(
+                        from_label=entry["from"],
+                        rel_type=entry["type"],
+                        to_label=entry["to"],
+                    )
+                )
+            return triples
+
+        # Optional label set — used to auto-derive relationship optionality.
+        # Any relationship where from_label or to_label is in this set is
+        # treated as optional: valid schema but may be absent on a fresh DB.
+        optional_labels: set[str] = {
+            lbl
+            for node_label in nodes_optional
+            for lbl in node_label.lstrip(":").split(":")
+            if lbl
+        }
+
+        all_rel_entries = _parse_rel_triples(raw.get("relationships", []), "relationships")
         relationships: list[RelationshipTriple] = []
-        for entry in raw.get("relationships", []):
-            if not isinstance(entry, dict) or not all(
-                k in entry for k in ("from", "type", "to")
-            ):
-                log.warning(
-                    "Slice '%s': skipping malformed relationship entry: %s. "
-                    "Expected keys: from, type, to.",
-                    domain,
-                    entry,
-                )
-                continue
-            relationships.append(
-                RelationshipTriple(
-                    from_label=entry["from"],
-                    rel_type=entry["type"],
-                    to_label=entry["to"],
-                )
-            )
+        relationships_optional: list[RelationshipTriple] = []
+        for rel in all_rel_entries:
+            if rel.from_label in optional_labels or rel.to_label in optional_labels:
+                relationships_optional.append(rel)
+            else:
+                relationships.append(rel)
 
-        # Build property registry scoped to labels referenced by this slice
+        # Build property registry scoped to all labels (required + optional).
         slice_labels: set[str] = set()
-        for node_label in nodes:
+        for node_label in nodes + nodes_optional:
             for lbl in node_label.lstrip(":").split(":"):
                 if lbl:
                     slice_labels.add(lbl)
@@ -415,5 +465,7 @@ class SliceRegistry:
             relationships=relationships,
             patterns=raw.get("patterns", []),
             warnings=raw.get("warnings", []),
+            nodes_optional=nodes_optional,
+            relationships_optional=relationships_optional,
             property_registry=scoped_properties,
         )

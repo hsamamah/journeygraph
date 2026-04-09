@@ -58,27 +58,16 @@ LIMIT 10;
 
 // ── Q3: Active delays at a station — via AFFECTS_STOP ───────────────────
 // Delays directly linked to a station or its platforms.
-// $station_id from anchor resolver (preferred).
+// Anchor resolver injects the station id as a literal (e.g. 'STN_B01_F01').
 // Two OPTIONAL MATCHes cover both AFFECTS_STOP → Station and
 // AFFECTS_STOP → Platform (via Station -[:CONTAINS]-> Platform).
-MATCH (s:Station {id: $station_id})
+// IMPORTANT: include s in the WITH clause so it stays in scope for RETURN.
+MATCH (s:Station {id: 'STN_B01_F01'})
 OPTIONAL MATCH (i1:Interruption:Delay)-[:AFFECTS_STOP]->(s)
 OPTIONAL MATCH (s)-[:CONTAINS]->(p:Platform)
 OPTIONAL MATCH (i2:Interruption:Delay)-[:AFFECTS_STOP]->(p)
-WITH coalesce(i1, i2) AS i
+WITH s, coalesce(i1, i2) AS i
 WHERE i IS NOT NULL
-RETURN
-  i.interruption_id  AS delay_id,
-  i.severity         AS severity,
-  i.start_time       AS started,
-  i.description      AS description
-ORDER BY i.start_time DESC;
-
-// ── Q4: Active delays at a station — name fallback ───────────────────────
-// Use when anchor resolver returns no ID.
-MATCH (s:Station)
-WHERE s.name CONTAINS $station_name
-MATCH (i:Interruption:Delay)-[:AFFECTS_STOP]->(s)
 RETURN
   s.name             AS station,
   i.interruption_id  AS delay_id,
@@ -86,6 +75,23 @@ RETURN
   i.start_time       AS started,
   i.description      AS description
 ORDER BY i.start_time DESC;
+
+// ── Q4: Delays via AFFECTS_TRIP at a station — resolved id ───────────────
+// When AFFECTS_STOP has no data, find delays via trips scheduled at the
+// station's platforms. Always use the resolved station id as a literal.
+// WITH must carry s through to keep it in scope for RETURN.
+MATCH (s:Station {id: 'STN_B01_F01'})
+MATCH (s)-[:CONTAINS]->(p:Platform)<-[:SCHEDULED_AT]-(t:Trip)
+MATCH (i:Interruption:Delay)-[:AFFECTS_TRIP]->(t)
+WITH s, i
+RETURN
+  s.name             AS station,
+  i.interruption_id  AS delay_id,
+  i.severity         AS severity,
+  i.start_time       AS started,
+  i.description      AS description
+ORDER BY i.start_time DESC
+LIMIT 20;
 
 // ── Q5: System-wide delay summary — all bus routes ranked ────────────────
 // "Any bus delays downtown right now?" — no anchor, returns all active.

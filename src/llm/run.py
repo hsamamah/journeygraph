@@ -53,7 +53,6 @@ from neo4j.exceptions import Neo4jError
 from src.common.config import LLMConfig, get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
-from src.common.paths import LOG_DIR
 from src.llm.anchor_clarifier import AnchorClarifier
 from src.llm.anchor_resolver import AnchorResolver
 from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
@@ -315,7 +314,7 @@ def _run_query(
     candidate_limit: int = 1,
     strategy: str = "topk",
     label: str | None = None,
-) -> tuple[PlannerOutput, SubgraphOutput | None, NarrationOutput | None]:
+) -> tuple[PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None]:
     """
     Execute a single query through the full pipeline.
 
@@ -344,7 +343,8 @@ def _run_query(
         label:            Optional prefix for --demo mode e.g. '[1/4]'.
 
     Returns:
-        (PlannerOutput, SubgraphOutput | None, NarrationOutput | None)
+        (PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None)
+        Text2CypherOutput is None when the planner routes to subgraph-only path.
         NarrationOutput is None only when the query is rejected or a
         Neo4j error occurs during anchor resolution.
     """
@@ -359,7 +359,7 @@ def _run_query(
     print(_fmt_planner_verbose(planner_output))
 
     if planner_output.rejected:
-        return planner_output, None, None
+        return planner_output, None, None, None
 
     # ── Anchor resolution — shared pre-fork step ──────────────────────────────
     # Runs for every non-rejected query regardless of path. Both Text2Cypher
@@ -384,7 +384,7 @@ def _run_query(
             exc_info=True,
         )
         print(f"\nDatabase error during anchor resolution: {exc}")
-        return planner_output, None, None
+        return planner_output, None, None, None
 
     # ── Anchor clarification — fires only on station/route failures ──────────────
     # Silent repair pass: maps failed mentions to valid WMATA names via a small
@@ -408,12 +408,17 @@ def _run_query(
     t2c_output: Text2CypherOutput | None = None
 
     if planner_output.path in {"text2cypher", "both"}:
-        query_writer_output = run_query_writer(query, planner_output, llm_config)
+        schema_slice = registry.get(planner_output.schema_slice_key)
+        query_writer_output = run_query_writer(
+            query,
+            planner_output,
+            llm_config,
+            schema_slice=schema_slice,
+            resolved_anchors=resolutions.as_flat_dict(),
+        )
         print("\n[Query Writer Output]")
         print("Cypher Query:\n", query_writer_output.cypher_query)
         print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
-
-        schema_slice = registry.get(planner_output.schema_slice_key)
         val_result = validate_and_log_cypher(
             query_writer_output.cypher_query,
             schema_slice,
@@ -474,7 +479,7 @@ def _run_query(
     )
     print(_fmt_narration(narration_output))
 
-    return planner_output, sub_output, narration_output
+    return planner_output, t2c_output, sub_output, narration_output
 
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
@@ -520,11 +525,12 @@ def _mode_demo(
     Always runs in strict mode (enforced at registry construction by caller).
     """
     print(f"Running {len(_DEMO_QUERIES)} demo queries in strict mode...\n")
-    results: list[tuple[str, PlannerOutput]] = []
+
+    results: list[tuple] = []
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, _, _ = _run_query(
+        planner_output, t2c_output, _, narration_output = _run_query(
             planner,
             narration_agent,
             db,
@@ -536,20 +542,33 @@ def _mode_demo(
             strategy=strategy,
             label=label,
         )
-        results.append((expected_domain, planner_output))
+        results.append((expected_domain, planner_output, t2c_output, narration_output))
 
     print(f"\n{'═' * 56}")
     print("Demo summary:")
     all_passed = True
-    for (expected, output), (query, _) in zip(results, _DEMO_QUERIES, strict=True):
+    for (expected, planner_out, t2c_out, narration_out), (query, _) in zip(
+        results, _DEMO_QUERIES, strict=True
+    ):
+        checks: list[tuple[bool, str]] = []
+
         if expected == "rejection":
-            passed = output.rejected
+            checks.append((planner_out.rejected, "planner:rejected"))
         else:
-            passed = not output.rejected and output.domain == expected
-        status = "✅" if passed else "❌"
-        if not passed:
+            checks.append((not planner_out.rejected and planner_out.domain == expected, f"planner:domain={expected}"))
+            if planner_out.path in {"text2cypher", "both"}:
+                t2c_ok = t2c_out is not None and t2c_out.success
+                checks.append((t2c_ok, "t2c:valid"))
+                result_count = len(t2c_out.results) if t2c_out is not None else 0
+                checks.append((True, f"t2c:rows={result_count}"))
+            checks.append((narration_out is not None, "narration:produced"))
+
+        row_passed = all(ok for ok, _ in checks)
+        if not row_passed:
             all_passed = False
-        print(f"  {status}  {query[:52]!r:<54}  expected={expected}")
+        status = "✅" if row_passed else "❌"
+        detail = "  ".join(("✓" if ok else "✗") + lbl for ok, lbl in checks)
+        print(f"  {status}  {query[:48]!r:<50}  {detail}")
 
     print(f"\n{'All passed' if all_passed else 'Some checks failed'}")
 
@@ -648,16 +667,13 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, An
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Set up global logging configuration to show all internal module logs
+    # Configure root logger for third-party libraries (httpx, neo4j, etc.).
+    # Project loggers use get_logger(__name__) which writes to logs/pipeline.log
+    # directly (propagate=False), so this basicConfig only affects external libs.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     )
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _fh = logging.FileHandler(LOG_DIR / "llm_run.log", encoding="utf-8")
-    _fh.setLevel(logging.INFO)
-    _fh.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
-    logging.getLogger().addHandler(_fh)
 
     args = _parse_args(argv)
     strict = args.strict or args.demo

@@ -36,9 +36,10 @@ def cypher_validator(
     domain = schema_slice.domain
 
     # Labels — schema_slice.nodes may contain multi-label strings (':A:B')
+    # nodes_optional are valid schema (may have no live data) — include in whitelist
     allowed_labels = {
         label
-        for node_str in schema_slice.nodes
+        for node_str in (schema_slice.nodes + schema_slice.nodes_optional)
         for label in re.findall(r'[A-Za-z0-9_]+', node_str)
     }
     used_labels = set(re.findall(r'(?<!\[):([A-Za-z0-9_]+)', cypher))
@@ -46,8 +47,11 @@ def cypher_validator(
         if label not in allowed_labels:
             errors.append(f"Label '{label}' not in whitelist for schema slice '{domain}'")
 
-    # Relationship types — schema_slice.relationships is list[RelationshipTriple]
-    allowed_rels = {rel.rel_type for rel in schema_slice.relationships}
+    # relationships_optional are valid schema — include in whitelist
+    allowed_rels = {
+        rel.rel_type
+        for rel in (schema_slice.relationships + schema_slice.relationships_optional)
+    }
     used_rels = set(re.findall(r'-\[:([A-Za-z0-9_]+)\]', cypher))
     for rel in used_rels:
         if rel not in allowed_rels:

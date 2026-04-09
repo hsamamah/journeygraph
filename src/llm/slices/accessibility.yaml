@@ -3,63 +3,53 @@
 # Schema slice for accessibility-infrastructure correlation analysis.
 #
 # Core question: which elevator/escalator outages are active at a station,
-# and do those outages correlate with service-level disruptions at the
-# same station?
+# and do those outages correlate with service-level disruptions?
 #
-# Two separate data sources — OutageEvent (WMATA Incidents API,  Accessibility layer)
-# and Interruption:Accessibility (GTFS-RT, Interruption layer) — are distinct
-# nodes. They may describe the same physical event but are not linked in the
-# current schema. See schema audit issue #2 in service_interruption_schema_v3.
+# Two separate data sources — OutageEvent (WMATA Incidents API) and
+# Interruption:Accessibility (GTFS-RT) — are distinct nodes not linked in
+# the current schema.
 #
-# Key traversal: station → elevator/escalator pathway nodes → outage events
-# AND station → accessibility interruptions → date.
+# Key traversal: station → pathway nodes → outage events
 #
 # Park (2023) alignment: indoor-to-outdoor graph connectivity via Pathway nodes.
-# This is the direct implementation of Park's future work on indoor-outdoor
-# graph integration — JourneyGraph's primary academic contribution.
-#
-# NOTE: OutageEvent nodes are part of Accessibility layer and may not
-# be present in the live graph if that layer has not been loaded. In default
-# mode this produces a startup warning. In strict mode it raises.
 
 domain: accessibility
 
-# ── Node label whitelist ──────────────────────────────────────────────────────
-# :Pathway:Elevator and :Pathway:Escalator use the v3 naming.
-# :Pathway was renamed to :Pathway in schema v3. See CONVENTIONS.md.
+# ── Required node labels ──────────────────────────────────────────────────────
+# Static structural nodes — always present after base pipeline layers load.
 nodes:
   - ":Pathway"
   - ":Pathway:Elevator"
   - ":Pathway:Escalator"
   - ":Station"
-  - ":OutageEvent"
-  - ":Date"
   - ":Level"
-  # NOTE: :Interruption:Accessibility is intentionally excluded from this
-  # whitelist. The label is valid schema (created from GTFS-RT ServiceAlerts
-  # with effect=ACCESSIBILITY_ISSUE) but no such alerts exist in the current
-  # live feed, so the label is never present in the graph. Re-add when
-  # WMATA begins publishing ACCESSIBILITY_ISSUE alerts.
+  - ":Date"
+
+# ── Optional node labels ──────────────────────────────────────────────────────
+# API/RT-derived overlay nodes — absent on a fresh DB until their layer runs.
+# All relationships touching these nodes are auto-derived as optional.
+nodes_optional:
+  - ":OutageEvent"                  # WMATA Incidents API — accessibility layer
+  - ":Interruption:Accessibility"   # GTFS-RT ServiceAlerts — no data yet in live feed
 
 # ── Relationship triples ──────────────────────────────────────────────────────
+# Static-to-static relationships always present after base layers load.
+# Relationships touching optional nodes are auto-derived as optional.
 relationships:
-  - { from: "Station",              type: "CONTAINS",         to: "Pathway"   }
-  - { from: "OutageEvent",          type: "AFFECTS",          to: "Pathway"   }
-  - { from: "Pathway",              type: "ON_LEVEL",         to: "Level"     }
-  - { from: "Pathway",              type: "STARTING_LEVEL",   to: "Level"     }
-  - { from: "Pathway",              type: "ENDING_LEVEL",     to: "Level"     }
-  # NOTE: Interruption -[:AFFECTS_STOP]-> Station and -[:ON_DATE]-> Date are
-  # excluded — they depend on :Interruption:Accessibility which is absent from
-  # the live graph. Re-add alongside the node label when data is available.
+  - { from: "Station",     type: "CONTAINS",       to: "Pathway"   }
+  - { from: "Pathway",     type: "ON_LEVEL",        to: "Level"     }
+  - { from: "Pathway",     type: "STARTING_LEVEL",  to: "Level"     }
+  - { from: "Pathway",     type: "ENDING_LEVEL",    to: "Level"     }
+  - { from: "OutageEvent", type: "AFFECTS",         to: "Pathway"   }
+  - { from: "Interruption",type: "AFFECTS_STOP",    to: "Station"   }
+  - { from: "Interruption",type: "ON_DATE",         to: "Date"      }
 
 # ── Traversal patterns ────────────────────────────────────────────────────────
-# Minimum 3-hop expansion required for accessibility queries.
 patterns:
   - "(:Station)-[:CONTAINS]->(:Pathway:Elevator)<-[:AFFECTS]-(:OutageEvent)"
   - "(:Station)-[:CONTAINS]->(:Pathway:Elevator)-[:ON_LEVEL]->(:Level)"
   - "(:Station)-[:CONTAINS]->(:Pathway:Escalator)-[:STARTING_LEVEL]->(:Level)"
-  # NOTE: (:Station)<-[:AFFECTS_STOP]-(:Interruption:Accessibility)-[:ON_DATE]->(:Date)
-  # excluded — depends on absent live data. Re-add when data is available.
+  - "(:Station)<-[:AFFECTS_STOP]-(:Interruption:Accessibility)-[:ON_DATE]->(:Date)"
 
 # ── WMATA-specific warnings ───────────────────────────────────────────────────
 warnings:
