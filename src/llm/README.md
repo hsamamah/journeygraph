@@ -198,7 +198,11 @@ Text2Cypher fills a gap the subgraph path cannot: **exact scalar answers** — c
 
 ### Known gaps
 
-- **No retry loop.** `Text2CypherOutput.attempt_count` and `ValidationError.cypher_excerpt` are designed for a 3-attempt refinement loop (the validator feeds its structured error back to the QueryWriter as a targeted hint), but the loop is not yet wired in `run.py`. Fix: wrap the `run_query_writer` + `validate_and_log_cypher` block in a `for attempt in range(3)` loop, passing `val_result.errors` as context on retry.
+None. The retry loop is implemented: `_run_query` in `run.py` wraps the `run_query_writer` +
+`validate_and_log_cypher` block in a `for attempt in range(1, 4)` loop. On validation failure the
+validator errors are fed back to `QueryWriter._build_user_message` as a targeted correction hint
+(`refinement_errors`), and the LLM is asked to fix only the flagged issues. `Text2CypherOutput.attempt_count`
+and `validation_notes` record how many cycles ran.
 
 ---
 
@@ -266,7 +270,7 @@ The agent loop is best suited for the REPL and async contexts. The `--demo` batc
 
 ### Recommended implementation path
 
-1. **Fix the remaining known gap** in the Text2Cypher path (retry loop) — resolved IDs and whitelist checks are already wired.
+1. ~~**Fix the remaining known gap** in the Text2Cypher path (retry loop)~~ — done. Retry loop, resolved IDs, and whitelist checks are all wired.
 2. **Add a `path_fallback` mechanism** to `run.py`: if text2cypher returns zero rows and path was `text2cypher`, re-run as `subgraph`. No agent loop required — just a conditional in `_run_query`. This alone recovers the most common failure mode.
 3. **Build the tool wrappers** as a thin adapter layer over the existing components.
 4. **Wire Claude tool use** via the Anthropic SDK (`tools=[...]` in `client.messages.create`) — the `QueryWriter` already uses the SDK directly, so no new dependencies.

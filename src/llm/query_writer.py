@@ -54,6 +54,8 @@ class QueryWriterInput:
     conventions: dict          # parsed conventions.json
     resolved_anchors: dict[str, list[str]] = field(default_factory=dict)
     # mention → resolved graph IDs e.g. {'yesterday': ['20260408'], 'Red Line': ['RED']}
+    refinement_errors: list[str] = field(default_factory=list)
+    # validator errors from prior attempt — injected as a correction hint on retry
 
 @dataclass
 class QueryWriterOutput:
@@ -72,7 +74,11 @@ class QueryWriter:
             input.conventions, input.patterns, input.schema_slice_obj
         )
         user_message = self._build_user_message(
-            input.user_query, input.anchors, input.schema_slice, input.resolved_anchors
+            input.user_query,
+            input.anchors,
+            input.schema_slice,
+            input.resolved_anchors,
+            input.refinement_errors or None,
         )
         prompt = f"{system_prompt}\n\n{user_message}"
 
@@ -157,6 +163,7 @@ class QueryWriter:
         anchors: PlannerAnchors,
         schema_slice: str,
         resolved_anchors: dict[str, list[str]] | None = None,
+        refinement_errors: list[str] | None = None,
     ) -> str:
         resolved_block = ""
         if resolved_anchors:
@@ -170,7 +177,18 @@ class QueryWriter:
                     "\nResolved IDs (use these literal values directly in Cypher — "
                     "do NOT use $parameters):\n" + "\n".join(lines)
                 )
-        return f"User query: {user_query}\nAnchors: {anchors}{resolved_block}\nSchema: {schema_slice}"
+        refinement_block = ""
+        if refinement_errors:
+            error_lines = "\n".join(f"  - {e}" for e in refinement_errors)
+            refinement_block = (
+                "\n\nYour previous Cypher query failed validation. "
+                "Fix ONLY the issues listed below — do not change anything else:\n"
+                + error_lines
+            )
+        return (
+            f"User query: {user_query}\nAnchors: {anchors}{resolved_block}"
+            f"\nSchema: {schema_slice}{refinement_block}"
+        )
 
 def call_neo4j_text2cypher(query: str, schema: str = None, url: str = None, user: str = None, password: str = None) -> dict:
     url = url or os.environ.get("NEO4J_TEXT2CYPHER_URL", "http://localhost:7474/ai/text2cypher")
@@ -191,6 +209,7 @@ def run_query_writer(
     llm_config: LLMConfig,
     schema_slice: SchemaSlice | None = None,
     resolved_anchors: dict[str, list[str]] | None = None,
+    refinement_errors: list[str] | None = None,
 ) -> QueryWriterOutput:
     """
     Construct QueryWriterInput, load conventions/patterns, and run QueryWriter.
@@ -236,5 +255,6 @@ def run_query_writer(
         patterns=patterns,
         conventions=conventions,
         resolved_anchors=resolved_anchors or {},
+        refinement_errors=refinement_errors or [],
     )
     return QueryWriter(llm_config).run(query_writer_input)

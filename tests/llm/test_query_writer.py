@@ -184,6 +184,27 @@ def test_build_user_message_no_resolved_ids_omits_block(
     assert "do NOT use $parameters" not in msg
 
 
+def test_build_user_message_injects_refinement_errors(
+    query_writer: QueryWriter, anchors: PlannerAnchors
+) -> None:
+    errors = ["Label :ServiceAlert not in whitelist", "Property unknown_prop not found"]
+    msg = query_writer._build_user_message(
+        "query", anchors, "accessibility", refinement_errors=errors
+    )
+    assert "failed validation" in msg
+    assert "ServiceAlert" in msg
+    assert "unknown_prop" in msg
+    assert "Fix ONLY" in msg
+
+
+def test_build_user_message_no_refinement_errors_omits_block(
+    query_writer: QueryWriter, anchors: PlannerAnchors
+) -> None:
+    msg = query_writer._build_user_message("query", anchors, "accessibility")
+    assert "failed validation" not in msg
+    assert "Fix ONLY" not in msg
+
+
 # ── Layer 1: _parse_llm_response ──────────────────────────────────────────────
 
 
@@ -413,3 +434,33 @@ def test_query_writer_run_no_code_block_graceful(
 
     assert output.cypher_query == ""
     assert output.cot_comments == "I cannot answer this query."
+
+
+def test_query_writer_run_passes_refinement_errors_to_prompt(
+    llm_config: LLMConfig, anchors: PlannerAnchors
+) -> None:
+    """refinement_errors from a prior failed attempt appear in the user message."""
+    refinement_input = QueryWriterInput(
+        user_query="is the elevator broken",
+        anchors=anchors,
+        schema_slice="accessibility",
+        schema_slice_obj=None,
+        patterns=[],
+        conventions={},
+        refinement_errors=["Label :ServiceAlert not in whitelist"],
+    )
+    llm_response = MagicMock()
+    llm_response.content = [MagicMock(text="```cypher\nMATCH (n:Pathway) RETURN n\n```")]
+
+    with patch("src.llm.query_writer.anthropic.Anthropic") as mock_anthropic:
+        mock_client = MagicMock()
+        mock_anthropic.return_value = mock_client
+        mock_client.messages.create.return_value = llm_response
+
+        writer = QueryWriter(llm_config)
+        writer.run(refinement_input)
+
+        call_args = mock_client.messages.create.call_args
+        sent_content = call_args.kwargs["messages"][0]["content"]
+        assert "ServiceAlert" in sent_content
+        assert "failed validation" in sent_content

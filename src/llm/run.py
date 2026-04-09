@@ -404,45 +404,70 @@ def _run_query(
             query,
         )
 
-    # ── Query Writer path ─────────────────────────────────────────────────────
+    # ── Query Writer path — up to 3 attempts ─────────────────────────────────
+    # Attempt 1: plain generation. Attempts 2–3: validator errors fed back as
+    # targeted correction hints. Stops as soon as validation passes.
     t2c_output: Text2CypherOutput | None = None
 
     if planner_output.path in {"text2cypher", "both"}:
         schema_slice = registry.get(planner_output.schema_slice_key)
-        query_writer_output = run_query_writer(
-            query,
-            planner_output,
-            llm_config,
-            schema_slice=schema_slice,
-            resolved_anchors=resolutions.as_flat_dict(),
-        )
-        print("\n[Query Writer Output]")
-        print("Cypher Query:\n", query_writer_output.cypher_query)
-        print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
-        val_result = validate_and_log_cypher(
-            query_writer_output.cypher_query,
-            schema_slice,
-            schema_slice.property_registry,
-            db.driver,
-            log,
-        )
-        if val_result.valid:
-            print("Cypher Validator: Query is valid.")
-            t2c_output = Text2CypherOutput(
-                cypher=query_writer_output.cypher_query,
-                results=val_result.results or [],
-                domain=planner_output.domain,
-                attempt_count=1,
-                success=True,
+        _MAX_ATTEMPTS = 3
+        refinement_errors: list[str] = []
+        all_validation_notes: list[str] = []
+
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            query_writer_output = run_query_writer(
+                query,
+                planner_output,
+                llm_config,
+                schema_slice=schema_slice,
+                resolved_anchors=resolutions.as_flat_dict(),
+                refinement_errors=refinement_errors or None,
             )
+            print(f"\n[Query Writer — attempt {attempt}/{_MAX_ATTEMPTS}]")
+            print("Cypher Query:\n", query_writer_output.cypher_query)
+            if attempt == 1:
+                print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
+
+            val_result = validate_and_log_cypher(
+                query_writer_output.cypher_query,
+                schema_slice,
+                schema_slice.property_registry,
+                db.driver,
+                log,
+            )
+
+            if val_result.valid:
+                print(f"Cypher Validator: valid (attempt {attempt}).")
+                t2c_output = Text2CypherOutput(
+                    cypher=query_writer_output.cypher_query,
+                    results=val_result.results or [],
+                    domain=planner_output.domain,
+                    attempt_count=attempt,
+                    validation_notes=all_validation_notes,
+                    success=True,
+                )
+                break
+
+            # Validation failed — collect errors and prepare for next attempt
+            log.warning(
+                "run | cypher validation failed | attempt=%d/%d | errors=%s",
+                attempt,
+                _MAX_ATTEMPTS,
+                val_result.errors,
+            )
+            all_validation_notes.extend(val_result.errors)
+            refinement_errors = val_result.errors
+
         else:
-            print("Cypher Validator Errors - see logs for details.")
+            # All attempts exhausted without a valid query
+            print(f"Cypher Validator: all {_MAX_ATTEMPTS} attempts failed.")
             t2c_output = Text2CypherOutput(
                 cypher="",
                 results=[],
                 domain=planner_output.domain,
-                attempt_count=1,
-                validation_notes=val_result.errors,
+                attempt_count=_MAX_ATTEMPTS,
+                validation_notes=all_validation_notes,
                 success=False,
             )
 
