@@ -53,6 +53,7 @@ from neo4j.exceptions import Neo4jError
 from src.common.config import LLMConfig, get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
+from src.llm.agent import AgentOrchestrator
 from src.llm.anchor_clarifier import AnchorClarifier
 from src.llm.anchor_resolver import AnchorResolver
 from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
@@ -158,6 +159,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "'coherence' uses typed relationship weights across all anchor "
             "types to pick the most coherent candidate set. Ignored when "
             "--candidate-limit=1."
+        ),
+    )
+
+    parser.add_argument(
+        "--mode",
+        choices=["static", "agentic"],
+        default="static",
+        help=(
+            "Pipeline execution mode. 'static' (default) runs the fixed "
+            "Planner → QueryWriter/Subgraph → Narration chain. "
+            "'agentic' replaces the retrieval step with a Claude agent loop "
+            "that selects tools dynamically (max 5 iterations). "
+            "Both modes share the Planner + AnchorResolver pre-step and the "
+            "NarrationAgent terminal step. Use --demo or --repl with either mode."
         ),
     )
 
@@ -507,6 +522,102 @@ def _run_query(
     return planner_output, t2c_output, sub_output, narration_output
 
 
+# ── Agentic query execution ───────────────────────────────────────────────────
+
+
+def _run_query_agentic(
+    planner: Planner,
+    orchestrator: AgentOrchestrator,
+    db: Neo4jManager,
+    query: str,
+    *,
+    clarifier: AnchorClarifier,
+    candidate_limit: int = 1,
+    strategy: str = "topk",
+    label: str | None = None,
+) -> tuple[PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None]:
+    """
+    Execute a single query through the agentic pipeline.
+
+    Shares the Planner + AnchorResolver + AnchorClarifier pre-step
+    with _run_query() verbatim. After anchor resolution, delegates to
+    AgentOrchestrator.run() instead of the static QueryWriter/Subgraph fork.
+
+    Returns the same 4-tuple as _run_query() so the eval harness and mode
+    functions can treat both pipelines identically.
+    """
+    invocation_time = datetime.now(UTC)
+    prefix = f"{label}  " if label else ""
+
+    planner_output = planner.run(query)
+
+    header = f"\n{'═' * 56}\n{prefix}Query: {query!r}  [agentic]\n{'═' * 56}"
+    print(header)
+    print(_fmt_planner_verbose(planner_output))
+
+    if planner_output.rejected:
+        return planner_output, None, None, None
+
+    # ── Shared pre-step: anchor resolution + clarification ────────────────────
+    disambiguation_strategy = (
+        TypeWeightedCoherenceStrategy() if strategy == "coherence" else None
+    )
+    resolver = AnchorResolver(
+        db=db,
+        invocation_time=invocation_time,
+        strategy=disambiguation_strategy,
+        candidate_limit=candidate_limit,
+    )
+    try:
+        resolutions = resolver.resolve(planner_output.anchors)
+    except Neo4jError as exc:
+        log.error(
+            "run_agentic | anchor resolution failed | %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        print(f"\nDatabase error during anchor resolution: {exc}")
+        return planner_output, None, None, None
+
+    if resolutions.failed:
+        resolutions = clarifier.clarify(resolutions, resolver)
+
+    if resolutions.any_resolved:
+        log.info(
+            "run_agentic | anchors resolved | config=%s | %s",
+            resolver.config,
+            resolutions.as_flat_dict(),
+        )
+    else:
+        log.warning(
+            "run_agentic | zero anchors resolved — proceeding to agent loop | query=%r",
+            query,
+        )
+
+    # ── Agent loop ────────────────────────────────────────────────────────────
+    try:
+        t2c_output, sub_output, narration_output = orchestrator.run(
+            query,
+            planner_output,
+            resolutions,
+            resolver,
+            invocation_time,
+        )
+    except Neo4jError as exc:
+        log.error(
+            "run_agentic | agent loop failed | %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        print(f"\nDatabase error during agent loop: {exc}")
+        return planner_output, None, None, None
+
+    print(_fmt_narration(narration_output))
+    return planner_output, t2c_output, sub_output, narration_output
+
+
 # ── Modes ─────────────────────────────────────────────────────────────────────
 
 def _mode_default(
@@ -520,18 +631,31 @@ def _mode_default(
     llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
+    pipeline_mode: str = "static",
+    orchestrator: AgentOrchestrator | None = None,
 ) -> None:
-    _run_query(
-        planner,
-        narration_agent,
-        db,
-        query,
-        registry=registry,
-        clarifier=clarifier,
-        llm_config=llm_config,
-        candidate_limit=candidate_limit,
-        strategy=strategy,
-    )
+    if pipeline_mode == "agentic" and orchestrator is not None:
+        _run_query_agentic(
+            planner,
+            orchestrator,
+            db,
+            query,
+            clarifier=clarifier,
+            candidate_limit=candidate_limit,
+            strategy=strategy,
+        )
+    else:
+        _run_query(
+            planner,
+            narration_agent,
+            db,
+            query,
+            registry=registry,
+            clarifier=clarifier,
+            llm_config=llm_config,
+            candidate_limit=candidate_limit,
+            strategy=strategy,
+        )
 
 
 def _mode_demo(
@@ -544,29 +668,45 @@ def _mode_demo(
     llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
+    pipeline_mode: str = "static",
+    orchestrator: AgentOrchestrator | None = None,
 ) -> None:
     """
     Four hardcoded smoke test queries.
     Always runs in strict mode (enforced at registry construction by caller).
+    Supports both static and agentic modes for side-by-side comparison.
     """
-    print(f"Running {len(_DEMO_QUERIES)} demo queries in strict mode...\n")
+    mode_label = f"[{pipeline_mode}]"
+    print(f"Running {len(_DEMO_QUERIES)} demo queries in strict mode {mode_label}...\n")
 
     results: list[tuple] = []
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, t2c_output, _, narration_output = _run_query(
-            planner,
-            narration_agent,
-            db,
-            query,
-            registry=registry,
-            clarifier=clarifier,
-            llm_config=llm_config,
-            candidate_limit=candidate_limit,
-            strategy=strategy,
-            label=label,
-        )
+        if pipeline_mode == "agentic" and orchestrator is not None:
+            planner_output, t2c_output, _, narration_output = _run_query_agentic(
+                planner,
+                orchestrator,
+                db,
+                query,
+                clarifier=clarifier,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+                label=label,
+            )
+        else:
+            planner_output, t2c_output, _, narration_output = _run_query(
+                planner,
+                narration_agent,
+                db,
+                query,
+                registry=registry,
+                clarifier=clarifier,
+                llm_config=llm_config,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+                label=label,
+            )
         results.append((expected_domain, planner_output, t2c_output, narration_output))
 
     print(f"\n{'═' * 56}")
@@ -608,12 +748,14 @@ def _mode_repl(
     llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
+    pipeline_mode: str = "static",
+    orchestrator: AgentOrchestrator | None = None,
 ) -> None:
     """
     Interactive query loop.
     Exits cleanly on 'quit', 'exit', or Ctrl+C / Ctrl+D.
     """
-    print("JourneyGraph query pipeline — interactive mode")
+    print(f"JourneyGraph query pipeline — interactive mode [{pipeline_mode}]")
     print(f"Resolver: candidate_limit={candidate_limit}  strategy={strategy}")
     print("Type a question, or 'quit' to exit.\n")
 
@@ -630,17 +772,28 @@ def _mode_repl(
             print("Exiting.")
             break
 
-        _run_query(
-            planner,
-            narration_agent,
-            db,
-            query,
-            registry=registry,
-            clarifier=clarifier,
-            llm_config=llm_config,
-            candidate_limit=candidate_limit,
-            strategy=strategy,
-        )
+        if pipeline_mode == "agentic" and orchestrator is not None:
+            _run_query_agentic(
+                planner,
+                orchestrator,
+                db,
+                query,
+                clarifier=clarifier,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+            )
+        else:
+            _run_query(
+                planner,
+                narration_agent,
+                db,
+                query,
+                registry=registry,
+                clarifier=clarifier,
+                llm_config=llm_config,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+            )
         print()
 
 
@@ -688,6 +841,35 @@ def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, An
     return planner, narration_agent, db, clarifier, registry, llm_config
 
 
+# ── Agentic startup ───────────────────────────────────────────────────────────
+
+
+def _startup_agentic(
+    *,
+    db: Neo4jManager,
+    llm_config: LLMConfig,
+    registry: SliceRegistry,
+    clarifier: AnchorClarifier,
+    narration_agent: NarrationAgent,
+) -> AgentOrchestrator:
+    """
+    Initialise the AgentOrchestrator after the standard _startup() completes.
+
+    All heavy deps (db, registry, clarifier, narration_agent) are reused from
+    _startup() — no additional DB queries or LLM instances are created here.
+
+    Returns:
+        AgentOrchestrator ready for run() calls.
+    """
+    return AgentOrchestrator(
+        db=db,
+        llm_config=llm_config,
+        registry=registry,
+        clarifier=clarifier,
+        narration_agent=narration_agent,
+    )
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
@@ -704,6 +886,7 @@ def main(argv: list[str] | None = None) -> None:
     strict = args.strict or args.demo
     candidate_limit: int = args.candidate_limit
     strategy: str = args.strategy
+    pipeline_mode: str = args.mode
 
     if candidate_limit > 1:
         log.info(
@@ -712,11 +895,26 @@ def main(argv: list[str] | None = None) -> None:
             strategy,
         )
 
+    if pipeline_mode == "agentic":
+        log.info("Pipeline mode: agentic (agent loop, max 5 iterations)")
+
     try:
         planner, narration_agent, db, clarifier, registry, llm_config = _startup(strict=strict)
     except (OSError, RuntimeError) as exc:
         log.error("Startup failed: %s", exc)
         sys.exit(1)
+
+    # Conditionally initialise the AgentOrchestrator — only when agentic mode
+    # is requested. Static mode is unaffected and incurs no extra cost.
+    orchestrator: AgentOrchestrator | None = None
+    if pipeline_mode == "agentic":
+        orchestrator = _startup_agentic(
+            db=db,
+            llm_config=llm_config,
+            registry=registry,
+            clarifier=clarifier,
+            narration_agent=narration_agent,
+        )
 
     try:
         if args.demo:
@@ -729,6 +927,8 @@ def main(argv: list[str] | None = None) -> None:
                 llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
+                pipeline_mode=pipeline_mode,
+                orchestrator=orchestrator,
             )
         elif args.repl:
             _mode_repl(
@@ -740,6 +940,8 @@ def main(argv: list[str] | None = None) -> None:
                 llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
+                pipeline_mode=pipeline_mode,
+                orchestrator=orchestrator,
             )
         elif args.query:
             _mode_default(
@@ -752,6 +954,8 @@ def main(argv: list[str] | None = None) -> None:
                 llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
+                pipeline_mode=pipeline_mode,
+                orchestrator=orchestrator,
             )
         else:
             _parse_args(["--help"])

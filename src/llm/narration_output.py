@@ -55,3 +55,6 @@ class NarrationOutput:
     trace: dict = field(default_factory=dict)
     success: bool = True
     failure_reason: str | None = None
+    agent_trace: dict | None = None
+    # Populated by AgentOrchestrator after the tool loop; None in static mode.
+    # Carries tool_call_history and retrieval summary for A/B eval comparison.
