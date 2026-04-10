@@ -1,29 +1,33 @@
 # JourneyGraph LLM Query Pipeline
 
-Natural language querying over the WMATA knowledge graph. The pipeline classifies a query, resolves anchor entities, then routes to a Subgraph Context Builder or Text2Cypher path — producing structured context consumed by the Narration Agent.
+Natural language querying over the WMATA knowledge graph. A question enters the pipeline, is classified and routed by the Planner, resolved to graph entity IDs, then answered via a Cypher-generated query, a topology subgraph, or both — with a final narration step producing a prose answer.
 
 ---
 
 ## Pipeline Stages
 
-| Stage | Component | Status |
+| Stage | Component | What it does |
 |---|---|---|
-| L3 | Planner (domain classifier + LLM call) | ✅ Done |
-| L4 | Text2Cypher (`Text2CypherRetriever`) | ✅ Done |
-| L5 | Anchor Resolver → Subgraph Context Builder | ✅ Done |
-| L6 | Narration Agent (4 response modes) | ✅ Done |
-
-Anchor resolution runs as a shared pre-fork step after the Planner and before the Text2Cypher / Subgraph path split. Resolved IDs are shared across both paths with no second DB round-trip.
+| L3 | **Planner** | Single LLM call: classifies domain, selects retrieval path, extracts anchor entities. Returns `PlannerOutput`. |
+| — | **AnchorResolver** | Resolves station/route/date mentions to graph node IDs via full-text Lucene index. Shared pre-fork — runs once, results used by both paths. |
+| — | **AnchorClarifier** | LLM-assisted repair pass. If any station/route mention fails Lucene lookup, a small LLM call maps the failed mention to the closest valid WMATA name. Silent — no user-facing output. |
+| L4 | **QueryWriter** | Builds a Cypher query using domain few-shot examples, schema slice constraints, and resolved anchor IDs. |
+| — | **CypherValidator** | Validates the generated query: write-clause guard, blocked-namespace guard, GDS procedure whitelist, label/rel/property whitelist, `EXPLAIN` parse check, then executes. 3-attempt retry loop feeds validation errors back to QueryWriter as targeted correction hints. |
+| L5 | **SubgraphBuilder** | Bidirectional hop expansion from anchor nodes → token-budgeted context block. Orchestrates HopExpander + ContextSerializer. |
+| L6 | **NarrationAgent** | Selects a response mode from `{synthesis, precision, contextual, degraded}`, assembles a structured prompt, makes the final LLM call. Returns a prose answer. |
+| — | **AgentOrchestrator** | Agentic variant. Replaces the fixed QueryWriter/SubgraphBuilder fork with a Claude tool-use loop (`full_text_search`, `cypher_query`, `subgraph_expand`, `entity_clarify`). Shares Planner and NarrationAgent with the static pipeline. |
 
 ---
 
 ## Query Domains
 
-| Domain | Example question |
-|---|---|
-| `transfer_impact` | How many trips were cancelled on the Red Line yesterday? |
-| `accessibility` | Is the elevator at Metro Center out of service? |
-| `delay_propagation` | Are there delays propagating from Gallery Place? |
+| Domain key | What it covers | Example question |
+|---|---|---|
+| `transfer_impact` | Trip cancellations, skips, and their effect on station transfer partners | "How many trips were cancelled on the Red Line yesterday?" |
+| `accessibility` | Elevator and escalator outages at stations | "Is the elevator at Metro Center out of service?" |
+| `delay_propagation` | Real-time delays above 5 minutes, propagation through the network | "Are there delays propagating from Gallery Place?" |
+
+A question outside these domains is rejected by the Planner with a `rejection_reason`. Use `null` domain in eval question metadata for adversarial/out-of-scope questions.
 
 ---
 
@@ -55,11 +59,14 @@ uv sync --extra llm
 # Single query
 uv run python -m src.llm.run "how many trips were cancelled on the red line yesterday"
 
-# Smoke test — all three domains + one rejection, strict mode
-uv run python -m src.llm.run --demo
-
 # Interactive loop
 uv run python -m src.llm.run --repl
+
+# Smoke test — one question per domain + one rejection, strict mode
+uv run python -m src.llm.run --demo
+
+# Agentic mode (tool-use loop instead of static Planner fork)
+uv run python -m src.llm.run "which stations are the biggest choke points" --agentic
 
 # Hard-fail on any schema validation warning
 uv run python -m src.llm.run "..." --strict
@@ -73,23 +80,112 @@ uv run python -m src.llm.run "..." --candidate-limit 5 --strategy coherence
 
 **`--candidate-limit`** — number of candidates fetched per anchor mention from the full-text index. `1` = baseline, no disambiguation. Values above `1` enable graph-assisted disambiguation via `--strategy`.
 
-**`--strategy`** — disambiguation strategy to use when `--candidate-limit > 1`. Choices: `topk` (default, takes the highest-scoring candidate) or `coherence` (`TypeWeightedCoherenceStrategy` — scores candidates by typed-relationship coherence across all anchor types in the query).
+**`--strategy`** — disambiguation strategy when `--candidate-limit > 1`. `topk` (default) takes the highest-scoring candidate. `coherence` uses `TypeWeightedCoherenceStrategy` — scores candidates by typed-relationship coherence across all anchor types in the query.
+
+**`--agentic`** — routes through `AgentOrchestrator` instead of the static fork. The agent loop makes up to 5 tool-call iterations, then hands accumulated results to NarrationAgent. Output shape is identical to the static pipeline for eval harness compatibility.
+
+---
+
+## Startup Sequence
+
+On every run (single query, REPL, or demo), startup runs in this order:
+
+1. `get_llm_config()` — hard fail if `ANTHROPIC_API_KEY` missing
+2. `Neo4jManager()` — hard fail if DB unreachable; connection held open for the session
+3. `SliceRegistry()` — validates schema slices against live graph (`db.labels()`, `db.relationshipTypes()`, `db.schema.nodeTypeProperties()`); detects GDS availability (`CALL gds.version()`)
+4. `Planner()` — builds LLM instance for Stage 1
+5. `NarrationAgent()` — builds LLM instance for narration
+6. `AnchorClarifier()` — fetches station/route name catalogue from graph once at startup
+7. Enter selected mode
+
+The DB validation (step 3) always completes before any LLM call, so a misconfigured database never wastes API tokens.
+
+---
+
+## Planner
+
+A single LLM call handles domain classification, path selection, and anchor entity extraction. Bundling avoids a two-round-trip approach and ensures routing decisions are made with the same context.
+
+**Stage 1 output** (JSON, parsed into `PlannerOutput`):
+```json
+{
+  "domain": "transfer_impact",
+  "path": "text2cypher",
+  "anchors": {
+    "stations": ["Metro Center"],
+    "routes": ["Red Line"],
+    "dates": ["2026-03-15"],
+    "pathway_nodes": [],
+    "levels": []
+  },
+  "path_reasoning": "count query — needs precise scalar",
+  "anchor_notes": "date explicit in question",
+  "use_gds": false
+}
+```
+
+`use_gds: true` signals that a GDS graph algorithm (PageRank, Dijkstra, betweenness, etc.) would answer the question. The Planner only sets this when GDS is installed (`SliceRegistry.gds_available`); if GDS is absent, any `use_gds: true` from the LLM is overridden to `false` (hallucination guard).
+
+**Rejection:** `null` domain → `PlannerOutput(rejected=True, rejection_message=...)`. Downstream stages are skipped.
 
 ---
 
 ## Anchor Resolution
 
-Anchors extracted by the Planner (stations, routes, dates, pathway nodes) are resolved to graph node IDs in a two-phase process, followed by an optional clarification pass:
+Anchor mentions extracted by the Planner (stations, routes, dates, pathway nodes, levels) are resolved to graph node IDs in a two-phase process:
 
-**Phase 1 — Candidate generation**: each mention is looked up via a Neo4j full-text index, returning up to `candidate_limit` candidates ranked by string match score.
+**Phase 1 — Candidate generation:** each mention is looked up via a Neo4j full-text index, returning up to `candidate_limit` candidates ranked by string match score.
 
-**Phase 2 — Disambiguation**: a `DisambiguationStrategy` selects one candidate per mention. When `candidate_limit=1` the strategy call is short-circuited — the single candidate is selected directly.
+**Phase 2 — Disambiguation:** a `DisambiguationStrategy` selects one candidate per mention. When `candidate_limit=1` the strategy is short-circuited — the single candidate is accepted directly.
 
-**Clarification pass** (`AnchorClarifier`): if any station or route mentions fail Lucene lookup, a small LLM call fires with the failed mentions and the full WMATA station/route name catalogue (fetched once at startup). The LLM maps each failed mention to the closest valid name; successfully mapped mentions are re-resolved and merged back into `AnchorResolutions`. Silent — no user-facing output. Dates, pathway nodes, and levels are excluded (name fuzzing cannot fix structural failures).
+**Clarification pass (`AnchorClarifier`):** if any station or route mention returns zero candidates, a small LLM call fires with the failed mentions and the full WMATA station/route catalogue (fetched once at startup). The LLM maps each failed mention to the closest valid name; resolved mentions are merged back into `AnchorResolutions`. Dates, pathway nodes, and levels are excluded (name fuzzing cannot fix structural failures).
 
-`AnchorResolutions` carries typed dicts (`resolved_stations`, `resolved_routes`, `resolved_dates`, `resolved_pathway_nodes`, `resolved_levels`) plus a `failed` dict for mentions that produced zero candidates. Each value is a `list[str]` — length 1 when unambiguous, `>1` when candidates tied.
+`AnchorResolutions` carries typed dicts (`resolved_stations`, `resolved_routes`, `resolved_dates`, `resolved_pathway_nodes`, `resolved_levels`) plus a `failed` dict. Each value is a `list[str]` — length 1 when unambiguous, `>1` if candidates tied.
 
-Pathway node lookup uses the `physical_pathway_name` full-text index (wildcard query) instead of a `toLower CONTAINS` scan — significantly faster on large graphs.
+---
+
+## Text2Cypher Path
+
+`QueryWriter` calls the LLM with:
+- Domain-specific few-shot `.cypher` examples (from `queries/<domain>/analytical.cypher`)
+- GDS few-shot examples (from `queries/gds/analytical.cypher`) when `use_gds=True`
+- `SchemaSlice` constraints (allowed node labels, relationship types, property names)
+- Resolved anchor IDs injected as literals (not `$parameters`) to prevent hallucinated IDs
+- `conventions.json` — formatting rules for generated Cypher
+
+`CypherValidator` validates the generated query in this order:
+1. Write-clause guard (`CREATE`/`MERGE`/`SET`/`DELETE`/`REMOVE` rejected immediately)
+2. Blocked-namespace guard (`apoc.`, `dbms.`, `db.index.`, etc.)
+3. GDS procedure whitelist (when GDS calls are present)
+4. `EXPLAIN` syntax check via Neo4j driver
+5. Label / relationship type / property whitelist against the schema slice
+6. Execute (read-only) and return results
+
+On validation failure, the errors are fed back to `QueryWriter` as `refinement_errors`. The outer loop retries up to 3 times. `Text2CypherOutput.attempt_count` records how many cycles ran.
+
+---
+
+## GDS Analytical Queries
+
+When GDS (Graph Data Science) is installed and the Planner sets `use_gds=True`, the QueryWriter injects GDS-specific few-shot examples and procedure guidance into the prompt.
+
+**GDS version note:** GDS 2.6+ requires a named graph as the first argument to all algorithm procedures. All GDS queries use the two-step named-graph pattern:
+
+```cypher
+CALL gds.graph.project('tmpName', ['Station', 'Route'],
+    {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
+YIELD graphName
+CALL gds.pageRank.stream(graphName)
+YIELD nodeId, score
+WITH gds.util.asNode(nodeId) AS node, score
+WHERE node:Station
+RETURN node.name AS station_name, round(score, 4) AS pagerank_score
+ORDER BY pagerank_score DESC LIMIT 10
+```
+
+**Graph model for GDS:** There is no direct Station-to-Station relationship in this graph. Network analysis uses the Route-Station bipartite graph: `['Station', 'Route']` nodes connected by `SERVES`. This naturally models station importance as a function of which routes serve them.
+
+**Allowed GDS algorithms:** PageRank, betweenness, degree, closeness, Louvain, label propagation, WCC, SCC, triangle count, node similarity, kNN, BFS, DFS, Dijkstra shortest path, all-pairs Dijkstra, A*. Named graph lifecycle (`gds.graph.project`, `gds.graph.drop`) is also permitted.
 
 ---
 
@@ -97,13 +193,11 @@ Pathway node lookup uses the `physical_pathway_name` full-text index (wildcard q
 
 Three-stage pipeline producing a token-budgeted context block:
 
-**Stage 1 — `AnchorResolver`**: resolves anchor mentions to graph node IDs (runs upstream as a shared pre-fork step).
+**Stage 1 — AnchorResolver** (shared pre-fork, described above).
 
-**Stage 2 — `HopExpander`**: bidirectional hop expansion from anchor nodes, constrained by a `DomainExpansionConfig` (relationship types, node labels, max hops, per-hop `LIMIT`). Returns a `RawSubgraph`.
+**Stage 2 — HopExpander:** bidirectional hop expansion from anchor nodes, constrained by a `DomainExpansionConfig` (relationship types, node labels, max hops, per-hop `LIMIT`). Returns a `RawSubgraph`.
 
-**Stage 3 — `ContextSerializer`**: serializes the `RawSubgraph` to a structured text block, then enforces a 6,000-token budget (tiktoken `cl100k_base`, lazy-loaded). Trim order when over budget: provenance nodes first → service layer nodes → interruption/outage nodes. Anchor nodes are never trimmed. After non-anchor trim candidates are exhausted, a binary search caps the provenance section (max 20 nodes) to fit within budget.
-
-`SubgraphBuilder.run()` orchestrates Stages 2 and 3 and returns a `SubgraphOutput`. On failure (zero anchors, empty expansion, or unhandled exception) it returns `SubgraphOutput(success=False)` and never raises.
+**Stage 3 — ContextSerializer:** serializes the `RawSubgraph` to a structured text block, then enforces a 6,000-token budget (tiktoken `cl100k_base`, lazy-loaded). Trim order when over budget: provenance nodes → service layer nodes → interruption/outage nodes. Anchor nodes are never trimmed. After non-anchor candidates are exhausted, binary search caps the provenance section (max 20 nodes).
 
 Per-domain expansion parameters live in `expansion_config.py` (`EXPANSION_CONFIG` dict keyed by domain name).
 
@@ -117,26 +211,23 @@ Terminal stage. Receives `PlannerOutput`, `Text2CypherOutput` (or `None`), and `
 
 | Mode | Condition | Behaviour |
 |---|---|---|
-| `synthesis` | Both paths succeeded | Lead with facts, explain pattern using both sources |
-| `precision` | Text2Cypher only | Answer directly, no speculation |
-| `contextual` | Subgraph only | Qualify quantities, describe topology |
-| `degraded` | Both failed or partial | Flag what could not be determined |
+| `synthesis` | Both Text2Cypher and Subgraph succeeded | Lead with precise facts, explain network pattern using both sources |
+| `precision` | Text2Cypher succeeded, Subgraph absent/failed | Answer directly from query results, no speculation |
+| `contextual` | Subgraph succeeded, Text2Cypher absent/failed | Describe topology, qualify quantities (no exact counts available) |
+| `degraded` | Both failed or partial | Flag what could not be determined; state what was and wasn't resolved |
 
-**Prompt structure:**
-- System section 1 (~100 tokens, fixed): role, no-fabrication rule, no pipeline self-disclosure
-- System section 2 (varies per mode): what data is available and how to use it
-- System section 3 (varies per domain): vocabulary framing from the domain schema slice
-- User message: `QUERY`, `DOMAIN / MODE`, `RESOLUTION STATUS` (degraded mode only — resolved and failed anchors), `PRECISE RESULTS` (if available), `GRAPH CONTEXT` (if available)
+**Prompt structure** (three sections, assembled per mode × domain):
+- Section 1 (~100 tokens, fixed): role definition, no-fabrication rule, no pipeline self-disclosure
+- Section 2 (varies per mode): what data is available and how to use it
+- Section 3 (varies per domain): vocabulary framing and WMATA data quirks from the schema slice
 
-`NarrationOutput` always includes a `trace` dict for the caller to surface. The trace is not injected into the LLM prompt.
-
-Token budget for the narration call is controlled separately from the planner via `LLM_NARRATION_MAX_TOKENS` (default 1024).
+`NarrationOutput.trace` carries the pipeline trace for the caller. The trace is never injected into the LLM prompt.
 
 ---
 
 ## Schema Slices
 
-Each query domain maps to a YAML file in `src/llm/slices/`. A slice defines the exact node labels, relationship types, traversal patterns, and WMATA data quirks the LLM is permitted to reference for that domain. `SliceRegistry` validates every slice against the live graph at startup and injects it into the `QueryWriter` system prompt as hard constraints.
+Each query domain maps to a YAML file in `src/llm/slices/`. A slice defines the exact node labels, relationship types, traversal patterns, and WMATA data quirks the LLM is permitted to reference. `SliceRegistry` validates every slice against the live graph at startup and injects it into the `QueryWriter` system prompt as hard constraints.
 
 ```
 src/llm/slices/
@@ -145,132 +236,48 @@ src/llm/slices/
     delay_propagation.yaml
 ```
 
-**Required vs optional schema** — node labels and relationships fall into two categories:
+**Required vs. optional schema:**
+- `nodes:` / `relationships:` — static structural nodes always present after base layers load. Checked at startup; strict mode fails if any are absent.
+- `nodes_optional:` — real-time overlay nodes absent on a fresh DB (`Interruption:*`, `TripUpdate`, `OutageEvent`, …). Included in the validator whitelist so the LLM may reference them; never checked at startup. Any relationship whose endpoint is in `nodes_optional:` is automatically treated as optional.
 
-- **`nodes:` / `relationships:`** — static structural nodes always present after base pipeline layers load (Station, Platform, Route, Trip, …). Checked against `db.labels()` / `db.relationshipTypes()` at startup; strict mode fails if any are absent.
-- **`nodes_optional:`** — RT/API overlay nodes absent on a fresh DB (Interruption:\*, TripUpdate, OutageEvent, …). Included in the validator whitelist so the LLM may reference them; never checked at startup. Any relationship whose endpoint is in `nodes_optional` is automatically treated as optional too — no `relationships_optional` entry needed in the YAML.
-
-To add a new domain: add a YAML file with the four required fields (`nodes`, `relationships`, `patterns`, `warnings`) and register the domain key in `_SLICE_KEY_MAP` in `planner.py`.
-
----
-
-## Future Improvements
-
-### Vector Embedding Fallback for Anchor Resolution
-
-When Lucene full-text search returns zero candidates for a station or route mention (e.g. "Dupont" instead of "Dupont Circle"), the anchor fails silently and the pipeline degrades. A vector similarity fallback would catch these near-miss variants.
-
-**Intended flow:** Lucene lookup → zero results → vector ANN search → still nothing → clarification LLM call (clarification is already implemented; vector ANN search is the missing middle step).
-
-**Architecture:**
-- At ETL load time, compute embeddings for each `Station.name` and `Route.route_long_name` and store them as a `name_embedding` property using `db.create.setNodeVectorProperty`.
-- Create a Neo4j vector index at schema-init time (alongside existing full-text indexes in `constraints.py`):
-  ```cypher
-  CREATE VECTOR INDEX station_embeddings IF NOT EXISTS
-  FOR (s:Station) ON s.name_embedding
-  OPTIONS { indexConfig: {
-    `vector.dimensions`: 1536,
-    `vector.similarity_function`: 'cosine'
-  }}
-  ```
-- At runtime, embed the failed mention and query: `CALL db.index.vector.queryNodes('station_embeddings', 3, $queryVector) YIELD node, score WHERE score >= 0.75`.
-
-**Blocker:** `neo4j-graphrag` has no `AnthropicEmbeddings` — Anthropic does not expose a public embeddings API. A second embedding provider (OpenAI or Cohere) would need to be added. This adds dependency and credential complexity that is not currently justified by the question set.
-
-**Revisit when:** the question set grows to include more free-form station references, or a second LLM provider is added for another reason.
+To add a new domain: add a YAML file with `nodes`, `relationships`, `patterns`, `warnings` fields and register the domain key in `_SLICE_KEY_MAP` in `planner.py`.
 
 ---
 
-## Text2Cypher — Current State
+## Agentic Pipeline
 
-The Text2Cypher path is fully wired. `QueryWriter` calls Claude with domain conventions and few-shot `.cypher` patterns, the `CypherValidator` runs EXPLAIN + whitelist checks + execution, and the resulting `Text2CypherOutput` is passed to the Narration Agent. The `precision` mode (Text2Cypher only) and `synthesis` mode (both paths) are live.
+`AgentOrchestrator` (`agent.py`) provides an alternative to the static pipeline. Rather than committing upfront to one retrieval path, the agent uses Claude's native tool-use API to decide which tools to call based on what it observes:
 
-### What it answers
+**Tools available to the agent:**
 
-Text2Cypher fills a gap the subgraph path cannot: **exact scalar answers** — counts, totals, booleans.
-
-- "How many trips were skipped on Orange Line yesterday?" → `7` (not "looks like several")
-- "Are there any active elevator outages at Gallery Place?" → `true`
-
-### Known gaps
-
-None. The retry loop is implemented: `_run_query` in `run.py` wraps the `run_query_writer` +
-`validate_and_log_cypher` block in a `for attempt in range(1, 4)` loop. On validation failure the
-validator errors are fed back to `QueryWriter._build_user_message` as a targeted correction hint
-(`refinement_errors`), and the LLM is asked to fix only the flagged issues. `Text2CypherOutput.attempt_count`
-and `validation_notes` record how many cycles ran.
-
----
-
-## Future: Agentic Graph RAG
-
-The current pipeline is **static RAG** — every decision is made upfront and the execution path is fixed. The Planner commits to a domain, path, and anchor list before touching any data. If the Cypher returns zero rows or the subgraph expansion is sparse, the pipeline proceeds to degraded narration with no recovery.
-
-Moving to **agentic graph RAG** means replacing the linear DAG with a loop where an LLM decides which tools to call, observes what it finds, and iterates.
-
-### What static RAG cannot do (today)
-
-| Limitation | Example |
-|---|---|
-| No recovery from empty results | Cypher returns 0 rows → narration says "no data" with no retry |
-| Single upfront path commitment | Can't try text2cypher, observe failure, then fall back to subgraph |
-| No multi-domain queries | "Which stations have both elevator outages AND cancelled trips?" is classified into one domain and loses the other half |
-| Predetermined hop topology | `EXPANSION_CONFIG` hard-codes which relationship types to follow per domain — the expander can't adapt to what it finds mid-traversal |
-| ~~No self-correction~~ | Implemented: 3-attempt retry loop feeds validator errors back to `QueryWriter` as targeted correction hints (`refinement_errors`) |
-| Stateless across turns | No memory of previous results that could seed a follow-up query |
-
-### Proposed agentic architecture
-
-Replace `_run_query` in `run.py` with an agent loop. The agent has access to a fixed tool set and decides which tools to call based on intermediate results:
-
-```
-Tools:
-  resolve_entities(mentions)        → AnchorResolutions
-  get_schema(domain)                → SchemaSlice
-  run_cypher(query)                 → rows | error
-  expand_subgraph(anchor_ids)       → SubgraphOutput
-  clarify_anchors(failed_mentions)  → corrected AnchorResolutions
-
-Agent loop (max N iterations):
-  1. Classify domain + extract anchor mentions (Planner, unchanged)
-  2. Call tools in any order, observe results
-  3. If run_cypher returns 0 rows → broaden query or switch to expand_subgraph
-  4. If expand_subgraph is sparse → try different relationship types via run_cypher
-  5. Stop when confident enough to narrate, or budget exhausted
-  6. Call NarrationAgent with whatever was gathered
-```
-
-### Extension points already in the codebase
-
-Every component is already structured as a callable with a clean input/output contract — converting them to tools requires no internal changes:
-
-| Current component | As an agent tool |
-|---|---|
-| `AnchorResolver.resolve()` | `resolve_entities(mentions) → AnchorResolutions` |
-| `cypher_validator()` | `run_cypher(query) → rows \| ValidationResult` |
-| `SubgraphBuilder.run()` | `expand_subgraph(anchor_ids, domain) → SubgraphOutput` |
-| `AnchorClarifier.clarify()` | `clarify_anchors(failed) → AnchorResolutions` |
-| `SliceRegistry.get()` | `get_schema(domain) → SchemaSlice` |
-
-`Text2CypherOutput.attempt_count`, `validation_notes`, and `ValidationError.cypher_excerpt` were designed specifically for a retry-aware loop — these fields are dead weight in the current static pipeline but become load-bearing in an agentic one.
-
-### Latency and cost trade-offs
-
-| Approach | LLM calls per query | Latency |
+| Tool | Wraps | What it does |
 |---|---|---|
-| Current pipeline (with retry loop) | 2–7 | ~5–15s |
-| Level 2: path fallback (text2cypher → subgraph on zero rows) | 2–8 | ~8–20s |
-| Level 3: full agent loop | 4–12 | ~15–40s |
+| `full_text_search` | `AnchorResolver` | Resolve one entity mention to graph node IDs |
+| `cypher_query` | `QueryWriter` + `CypherValidator` | Generate and execute a Cypher query with 3-attempt retry |
+| `subgraph_expand` | `SubgraphBuilder` | Expand a subgraph from resolved anchor IDs |
+| `entity_clarify` | `AnchorClarifier` | LLM repair pass for failed entity lookups |
 
-The agent loop is best suited for the REPL and async contexts. The `--demo` batch mode should keep the static pipeline as a fast-path option.
+The agent loop runs up to 5 iterations. On each iteration, it calls `client.messages.create(tools=TOOL_DEFINITIONS, tool_choice="auto")`, dispatches returned `tool_use` blocks to the execute functions in `agent_tools.py`, appends `tool_result` messages, and continues until `stop_reason == "end_turn"` or the iteration budget is exhausted. The accumulated `AgentContext` (Cypher results + subgraph expansions) is then projected into `Text2CypherOutput | None` and `SubgraphOutput | None` for the NarrationAgent.
 
-### Recommended implementation path
+**When to use agentic mode:**
+- Questions that might require fallback (zero Cypher rows → expand subgraph)
+- Multi-domain questions
+- Exploratory REPL sessions where the question type is uncertain
 
-1. ~~**Fix the remaining known gap** in the Text2Cypher path (retry loop)~~ — done. Retry loop, resolved IDs, and whitelist checks are all wired.
-2. **Add a `path_fallback` mechanism** to `run.py`: if text2cypher returns zero rows and path was `text2cypher`, re-run as `subgraph`. No agent loop required — just a conditional in `_run_query`. This alone recovers the most common failure mode.
-3. **Build the tool wrappers** as a thin adapter layer over the existing components.
-4. **Wire Claude tool use** via the Anthropic SDK (`tools=[...]` in `client.messages.create`) — the `QueryWriter` already uses the SDK directly, so no new dependencies.
-5. **Evaluate using `tests/eval/`** before and after each step to measure answer quality improvement.
+**When to use static mode:**
+- Batch eval runs (faster, more predictable token cost)
+- Well-defined questions within a single domain
+- Cost-sensitive deployments
+
+---
+
+## Future: Vector Embedding Fallback for Anchor Resolution
+
+When Lucene full-text search returns zero candidates (e.g. "Dupont" instead of "Dupont Circle"), the anchor falls back to the `AnchorClarifier` LLM call. A vector similarity middle step would catch near-miss variants before reaching the LLM.
+
+**Intended flow:** Lucene → zero results → vector ANN search → still nothing → AnchorClarifier
+
+**Blocker:** Anthropic does not expose a public embeddings API. A second provider (OpenAI or Cohere) would be required. Not currently justified by the question set size.
 
 ---
 
@@ -278,25 +285,28 @@ The agent loop is best suited for the REPL and async contexts. The `--demo` batc
 
 ```
 src/llm/
-    run.py                       ← CLI entry point; shared anchor resolution + clarification pre-fork
-    planner.py                   ← Single LLM call: domain + path + anchor extraction; produces PlannerOutput
+    run.py                       ← CLI entry point; shared pre-fork (anchor resolution + clarification)
+    planner.py                   ← Stage 1 LLM call: domain + path + anchor extraction
     planner_output.py            ← PlannerOutput and PlannerAnchors dataclasses
-    anchor_resolver.py           ← Two-phase anchor resolution; TopKStrategy (default)
+    anchor_resolver.py           ← Two-phase anchor resolution; TopK strategy (default)
     anchor_clarifier.py          ← LLM-assisted repair for failed station/route anchors
     disambiguation_strategies.py ← TypeWeightedCoherenceStrategy and strategy protocol
+    query_writer.py              ← Text2Cypher LLM call; schema slice + anchor ID injection;
+    │                               GDS few-shot loading; GDS_PROCEDURE_WHITELIST
+    cypher_validator.py          ← Write-clause guard + namespace guard + GDS whitelist +
+    │                               label/rel/property whitelist + EXPLAIN + execution
+    slice_registry.py            ← Loads + validates schema slices; GDS availability detection
+    llm_factory.py               ← LLM provider abstraction (Anthropic)
     subgraph_builder.py          ← Subgraph path orchestrator (HopExpander + ContextSerializer)
-    hop_expander.py              ← Stage 2: bidirectional hop expansion → RawSubgraph
-    context_serializer.py        ← Stage 3: serialization + 6,000-token budget enforcement
-    subgraph_output.py           ← SubgraphOutput dataclass; make_zero_anchor_fallback()
+    hop_expander.py              ← Bidirectional hop expansion → RawSubgraph
+    context_serializer.py        ← Serialization + 6,000-token budget enforcement
+    subgraph_output.py           ← SubgraphOutput dataclass
     expansion_config.py          ← DomainExpansionConfig; EXPANSION_CONFIG per domain
-    query_writer.py              ← Text2Cypher LLM call; injects SchemaSlice constraints +
-    │                               resolved anchor IDs as literals into the prompt
-    cypher_validator.py          ← EXPLAIN + node/rel/property whitelist + execution
-    slice_registry.py            ← Loads and validates schema slices against live graph;
-    │                               splits required vs optional nodes/relationships
-    llm_factory.py               ← LLM provider abstraction (currently: Anthropic)
-    narration_agent.py           ← Terminal stage; mode selection, prompt assembly, LLM call
+    agent.py                     ← AgentOrchestrator — agentic tool-use loop
+    agent_tools.py               ← Tool definitions (TOOL_DEFINITIONS) and execute_* functions
+    narration_agent.py           ← Terminal stage: mode selection, prompt assembly, LLM call
     narration_output.py          ← NarrationOutput dataclass
     text2cypher_output.py        ← Text2CypherOutput dataclass
-    slices/                      ← Domain YAML files (one per query domain)
+    conventions.json             ← Cypher formatting rules for QueryWriter
+    slices/                      ← Domain YAML schema slices (one per query domain)
 ```

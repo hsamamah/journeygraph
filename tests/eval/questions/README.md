@@ -2,7 +2,7 @@
 
 Each contributor adds one YAML file here with 10 questions. The eval harness loads all files and runs every question against a matrix of pipeline configurations.
 
-See `../README.md` for the full framework overview, validator CLI, and planned harness design.
+See `../README.md` for the full framework overview, validator CLI, and harness design.
 
 ---
 
@@ -78,6 +78,26 @@ Per file of 10, aim for:
 
 ---
 
+## GDS questions
+
+GDS (Graph Data Science) questions are included in `hani_gds.yaml`. These test the pipeline's ability to route graph algorithm questions to the GDS execution path (Planner sets `use_gds=True`, QueryWriter injects GDS few-shot examples).
+
+**Oracle cypher for GDS questions** must use the named-graph pattern required by GDS 2.6+:
+```cypher
+CALL gds.graph.project('tmpEval001', ['Station', 'Route'],
+    {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
+YIELD graphName
+CALL gds.pageRank.stream(graphName)
+YIELD nodeId, score
+...
+```
+
+Use a unique graph name per question (e.g. `tmpEval001`, `tmpEval002`) to avoid "graph already exists" errors when the validator runs questions sequentially.
+
+**Negative control:** include one question in the GDS file that should NOT use GDS (e.g. an accessibility count question). Tag it with `category: edge_case` and verify the Planner does not set `use_gds=True` for it.
+
+---
+
 ## Temporal framing
 
 **Do not hardcode dates.** The interruption and accessibility layers have not run continuously, so arbitrary dates are likely to return no data. Use implicit temporal framing (`"most recently"`, `"right now"`, `"recently"`) so the pipeline resolves against whatever data is actually in the graph. The oracle confirms a date exists at validation time.
@@ -100,6 +120,8 @@ These were discovered during oracle authoring. Oracles that ignore these will re
 | Rail skip coverage | Only Orange and Yellow lines have `:Skip` data in current graph |
 | Rail delay coverage | No `:Delay` on rail in current data — delays are bus-only |
 | `OutageEvent` ↔ `Interruption` | These are **separate data sources** (WMATA Incidents API vs GTFS-RT) with no graph link — questions that ask about both must not imply causation |
+| GDS: no Station→Station edges | Use the Route-Station bipartite graph for GDS: `['Station', 'Route']` + `SERVES` |
+| GDS: named graph required | GDS 2.6.9 does not accept anonymous inline projection maps — always use `gds.graph.project('name', ...)` |
 
 ---
 

@@ -29,7 +29,9 @@ tests/eval/
 ├── test_eval_framework.py    ← unit tests for harness, scorer, and validator
 ├── questions/
 │   ├── README.md             ← question schema reference and contributor guide
-│   └── hani.yaml             ← 10 validated questions (transfer_impact, accessibility, delay_propagation)
+│   ├── hani.yaml             ← 10 questions: transfer_impact, accessibility, delay_propagation
+│   └── hani_gds.yaml         ← 10 GDS-focused questions (PageRank, betweenness, Dijkstra,
+│                                community detection, BFS) + 1 accessibility negative control
 └── results/
     └── <run_id>.jsonl        ← harness output (gitignored)
     └── <run_id>_scored.jsonl ← scorer output (gitignored)
@@ -60,7 +62,7 @@ tests/eval/
 > **Run the pipeline before running eval.** Temporal expressions like `"now"`, `"most recently"`, and `"recently"` resolve against whatever Date nodes are in the graph. If the graph has not been refreshed today, questions with implicit dates will fail anchor resolution and receive a degraded (no-data) answer.
 >
 > ```bash
-> uv run -m src.llm.pipeline   # reload GTFS-RT and Incidents data
+> uv run python -m src.pipeline --layers interruption accessibility
 > ```
 >
 > After a reload, rerun `validate_questions.py --write-ground-truth` for any questions whose oracle results may have changed (e.g. new skip/delay counts).
@@ -75,6 +77,9 @@ uv run -m tests.eval.run_harness
 
 # One contributor file × all configs
 uv run -m tests.eval.run_harness --file hani.yaml
+
+# GDS questions only
+uv run -m tests.eval.run_harness --file hani_gds.yaml
 
 # One question × all configs
 uv run -m tests.eval.run_harness --id hani_001
@@ -150,12 +155,11 @@ The script exits with code `1` if any question has no data, making it safe to wi
 ### Ground truth generation
 
 When `--write-ground-truth` is passed, each confirmed question's oracle rows are sent to the LLM with a prompt that asks it to write a 2–5 sentence prose statement describing what a correct pipeline answer must convey. The statement is written for an LLM judge that will later receive:
-
 - The original question
 - A proposed answer from the pipeline under test
 - The ground truth statement
 
-Statements include specific values a correct answer must mention (counts, route names, dates) and constraints on what it must not do (e.g. must not imply causation between OutageEvent and Interruption nodes, which are separate data sources with no graph link).
+Statements include specific values a correct answer must mention (counts, station names, dates) and constraints on what it must not do (e.g. must not imply causation between `OutageEvent` and `Interruption` nodes, which are separate data sources with no graph link).
 
 ---
 
@@ -179,7 +183,7 @@ Each JSONL row contains:
 | `answer` | str | Raw pipeline answer |
 | `planner_domain` | str | Actual domain the planner resolved |
 | `planner_path` | str | Actual path the planner chose (`subgraph`, `both`, etc.) |
-| `narration_mode` | str | `subgraph`, `both`, `rejected`, `zero_anchors`, `error` |
+| `narration_mode` | str | `synthesis`, `precision`, `contextual`, `degraded`, `rejected`, or `error` |
 | `regression` | bool | True if planner domain or path diverges from metadata |
 | `regression_detail` | str \| null | Human-readable description of the regression |
 | `latency_ms` | int | Wall-clock time for the full pipeline call |
@@ -211,7 +215,7 @@ LLM-as-judge scorer. Reads a harness JSONL file and appends four fields to each 
 
 Rows with no `ground_truth` are skipped (`passed: null`). The scorer prints a summary table broken down by `hop_depth` and `category`.
 
-The judge model defaults to whatever `LLM_MODEL` is set in `.env`. Use `--judge-model` to run an independent, cheaper judge (e.g. `claude-haiku-4-5-20251001`).
+The judge model defaults to whatever `LLM_MODEL` is set in `.env`. Use `--judge-model` to run an independent, cheaper judge.
 
 ---
 
@@ -229,7 +233,7 @@ Defines the named pipeline configurations and the Anthropic pricing table used t
 
 **`candidate_limit: 1`** short-circuits disambiguation — the topk candidate is used directly. Values >1 activate the configured `strategy`.
 
-**`force_path`** overrides the planner's routing decision after Stage 2. Useful for comparing subgraph vs. planner-chosen paths on the same question set.
+**`force_path`** overrides the planner's routing decision. Useful for comparing retrieval strategies on the same question set.
 
 Update the `pricing` block when Anthropic changes rates.
 
@@ -250,6 +254,8 @@ Questions must be distinct on at least two of these axes:
 
 Each file of 10 should include at least one adversarial (out-of-scope) question, one ambiguous anchor question, and one deep-hop question. See `questions/README.md` for the full schema.
 
+**GDS questions** (`hani_gds.yaml`) use `domain: transfer_impact` and `query_mode: text2cypher`. The Planner should set `use_gds=True` for graph algorithm questions; the negative control question (`hani_gds_010`, accessibility domain) tests that the Planner does NOT set `use_gds=True` for a non-GDS question in the same file.
+
 ---
 
 ## Live graph schema notes
@@ -268,3 +274,5 @@ These were discovered empirically during oracle authoring and differ from the sc
 | `OutageEvent` | Links via `AFFECTS → Pathway` — no direct link to `Station`; join via `Station-[:CONTAINS]->Pathway` |
 | Rail skip data | Only Orange (`O`) and Yellow (`Y`) lines have `:Skip` interruptions in current data |
 | Rail delay data | No `:Delay` interruptions on rail lines in current data — delays are bus-only |
+| GDS graph model | No direct `Station-to-Station` relationship; GDS uses the Route-Station bipartite graph (`['Station', 'Route']` + `SERVES`) |
+| GDS API | GDS 2.6.9 installed; requires named-graph pattern (`gds.graph.project('name', ...)`) — anonymous inline maps not supported |
