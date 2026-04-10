@@ -26,7 +26,7 @@ import pytest
 from src.common.config import LLMConfig
 from src.llm.cypher_validator import ValidationResult, cypher_validator, validate_and_log_cypher
 from src.llm.planner_output import PlannerAnchors
-from src.llm.query_writer import QueryWriter, QueryWriterInput, QueryWriterOutput
+from src.llm.query_writer import GDS_PROCEDURE_WHITELIST, QueryWriter, QueryWriterInput, QueryWriterOutput, _GDS_SYSTEM_SECTION
 from src.llm.slice_registry import RelationshipTriple, SchemaSlice
 
 
@@ -464,3 +464,158 @@ def test_query_writer_run_passes_refinement_errors_to_prompt(
         sent_content = call_args.kwargs["messages"][0]["content"]
         assert "ServiceAlert" in sent_content
         assert "failed validation" in sent_content
+
+
+# ── Layer 1: GDS — cypher_validator write-clause and blocked-CALL guards ──────
+
+
+@pytest.mark.parametrize("write_cypher", [
+    "CREATE (n:Station {name: 'x'}) RETURN n",
+    "MERGE (n:Station {id: 'x'})",
+    "MATCH (n) SET n.name = 'x'",
+    "MATCH (n) DELETE n",
+    "MATCH (n) DETACH DELETE n",
+    "DROP INDEX station_name",
+    "MATCH (n) REMOVE n.name",
+])
+def test_cypher_validator_rejects_write_clauses(write_cypher: str) -> None:
+    """All write clauses are rejected before the driver is touched."""
+    driver = MagicMock()  # driver should never be called
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
+    result = cypher_validator(write_cypher, slice_obj, prop_reg, driver)
+    assert result.valid is False
+    assert any("Write clause" in e or "not permitted" in e for e in result.errors)
+    driver.session.assert_not_called()
+
+
+@pytest.mark.parametrize("blocked_cypher", [
+    "MATCH (n) CALL apoc.load.url('http://x') YIELD value RETURN value",
+    "CALL dbms.security.clearAuthCache()",
+    "CALL db.index.fulltext.createNodeIndex('x', ['Label'], ['prop'])",
+])
+def test_cypher_validator_rejects_blocked_call_namespaces(blocked_cypher: str) -> None:
+    """Blocked CALL namespaces (apoc, dbms, db.index) are rejected before execution."""
+    driver = _make_driver(explain_ok=True)
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
+    result = cypher_validator(blocked_cypher, slice_obj, prop_reg, driver)
+    assert result.valid is False
+    assert any("Blocked CALL" in e for e in result.errors)
+
+
+# ── Layer 1: GDS — whitelist and case normalisation ───────────────────────────
+
+
+def test_cypher_validator_gds_whitelisted_proc_passes() -> None:
+    """A whitelisted GDS procedure call passes validation and executes."""
+    driver = _make_driver(explain_ok=True)
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
+    cypher = "CALL gds.pageRank.stream({nodeProjection: 'Station', relationshipProjection: 'TRANSFER_TO'}) YIELD nodeId, score RETURN nodeId, score"
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
+    assert result.valid is True
+    assert result.errors == []
+
+
+def test_cypher_validator_unknown_gds_proc_rejected() -> None:
+    """An unrecognised GDS procedure is rejected."""
+    driver = _make_driver(explain_ok=True)
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
+    cypher = "CALL gds.someNewAlgorithm.stream({}) YIELD nodeId RETURN nodeId"
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
+    assert result.valid is False
+    assert any("gds.somenewa" in e.lower() or "whitelist" in e for e in result.errors)
+
+
+def test_cypher_validator_gds_proc_case_insensitive() -> None:
+    """GDS procedure names are matched case-insensitively against the whitelist."""
+    driver = _make_driver(explain_ok=True)
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
+    # Mixed-case CALL keyword and procedure name — both should normalise and pass
+    cypher = "CALL GDS.PageRank.stream({nodeProjection: 'Station', relationshipProjection: 'TRANSFER_TO'}) YIELD nodeId, score RETURN nodeId, score"
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
+    assert result.valid is True
+
+
+def test_cypher_validator_gds_graph_drop_blocked() -> None:
+    """gds.graph.drop is excluded from the whitelist to prevent stateful side-effects."""
+    assert "gds.graph.drop" not in GDS_PROCEDURE_WHITELIST
+
+
+def test_cypher_validator_gds_version_not_in_whitelist() -> None:
+    """gds.version is a startup probe, not a query-answering procedure."""
+    assert "gds.version" not in GDS_PROCEDURE_WHITELIST
+
+
+def test_gds_whitelist_all_lowercase() -> None:
+    """All entries are lowercase to match the .lower() normalisation in the validator."""
+    for proc in GDS_PROCEDURE_WHITELIST:
+        assert proc == proc.lower(), f"Whitelist entry not lowercase: {proc!r}"
+
+
+# ── Layer 1: GDS — pure vs mixed query path ───────────────────────────────────
+
+
+def test_cypher_validator_pure_gds_query_skips_label_whitelist() -> None:
+    """A pure GDS query (no MATCH clause) skips the label/rel/property whitelist."""
+    driver = _make_driver(explain_ok=True)
+    # Slice has NO labels — a pure Cypher MATCH would always fail
+    slice_obj, prop_reg = _make_slice(labels=[])
+    cypher = "CALL gds.pageRank.stream({nodeProjection: 'Station', relationshipProjection: 'TRANSFER_TO'}) YIELD nodeId, score RETURN nodeId, score"
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
+    # Should pass despite the empty slice — GDS-only path bypasses whitelist
+    assert result.valid is True
+
+
+def test_cypher_validator_mixed_gds_match_query_runs_label_check() -> None:
+    """A query mixing CALL gds.* with a MATCH clause still validates MATCH labels."""
+    driver = _make_driver(explain_ok=True)
+    slice_obj, prop_reg = _make_slice(labels=["Station"])
+    # Contains a MATCH on an unlisted label — should be caught
+    cypher = (
+        "MATCH (source:UnknownLabel {id: 'x'}) "
+        "CALL gds.bfs.stream({nodeProjection: 'Station', relationshipProjection: 'TRANSFER_TO'}, {sourceNode: source}) "
+        "YIELD path RETURN path"
+    )
+    result = cypher_validator(cypher, slice_obj, prop_reg, driver)
+    assert result.valid is False
+    assert any("UnknownLabel" in e for e in result.errors)
+
+
+# ── Layer 1: GDS — QueryWriter prompt injection ───────────────────────────────
+
+
+def test_build_system_prompt_includes_gds_section_when_enabled(
+    query_writer: QueryWriter,
+) -> None:
+    """GDS system section appears in the prompt when use_gds=True."""
+    with patch("src.llm.query_writer.anthropic.Anthropic"):
+        writer = QueryWriter(
+            LLMConfig(
+                anthropic_api_key="k",
+                llm_provider="anthropic",
+                llm_model="m",
+                llm_max_tokens=512,
+                llm_narration_max_tokens=1024,
+            ),
+            use_gds=True,
+        )
+    prompt = writer._build_system_prompt({}, [], gds_enabled=True)
+    assert "Graph Data Science" in prompt
+    assert "gds.pageRank.stream" in prompt
+
+
+def test_build_system_prompt_omits_gds_section_when_disabled(
+    query_writer: QueryWriter,
+) -> None:
+    """GDS section is absent from the prompt when use_gds=False (default)."""
+    prompt = query_writer._build_system_prompt({}, [], gds_enabled=False)
+    assert "Graph Data Science" not in prompt
+    assert "gds.pageRank.stream" not in prompt
+
+
+def test_query_writer_use_gds_constructor_flag(llm_config: LLMConfig) -> None:
+    """use_gds constructor param is reflected on the instance."""
+    with patch("src.llm.query_writer.anthropic.Anthropic"):
+        writer_gds = QueryWriter(llm_config, use_gds=True)
+        writer_no_gds = QueryWriter(llm_config, use_gds=False)
+    assert writer_gds._gds_enabled is True
+    assert writer_no_gds._gds_enabled is False

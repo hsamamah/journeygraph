@@ -3,158 +3,23 @@
 Unit tests for the LLM Planner — pure Python components only.
 
 Coverage:
-    Stage 1 — domain classifier (_COMPILED_SIGNALS, _DOMAIN_WEIGHTS)
     JSON parsing — _parse_json_response
     Anchor extraction — _extract_anchors
     PlannerAnchors — is_empty()
 
 Not covered here (require live DB or LLM):
     SliceRegistry — needs Neo4j connection
-    Stage 2 — needs LLM mock
     Planner.run() end-to-end — needs both
-
-Verified manually against live output before tests were written:
-    "how many trips were cancelled on the red line yesterday"
-        → domain=transfer_impact, path=text2cypher,
-          anchors: routes=['red line'], dates=['yesterday']
-    "are there any delays propagating from Gallery Place"
-        → domain=delay_propagation, path=subgraph,
-          anchors: stations=['Gallery Place']
+    Domain routing — delegated to the LLM in Stage 1 (tested via test_gds.py mocks)
 """
 
 import pytest
 
 from src.llm.planner import (
-    _COMPILED_SIGNALS,
-    _DOMAIN_WEIGHTS,
-    _Stage1Result,
     _extract_anchors,
     _parse_json_response,
 )
 from src.llm.planner_output import PlannerAnchors
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _classify(query: str) -> _Stage1Result:
-    """
-    Run Stage 1 classification without instantiating Planner.
-    Mirrors the logic in Planner._stage1_classify exactly.
-    """
-    scores: dict[str, float] = {}
-    for domain, patterns in _COMPILED_SIGNALS.items():
-        matched = [p for p in patterns if p.search(query)]
-        scores[domain] = len(matched) / len(matched) if matched else 0.0
-
-    if all(s == 0.0 for s in scores.values()):
-        return _Stage1Result(domain=None, scores=scores, rejected=True)
-
-    winner = max(scores, key=lambda d: (scores[d], _DOMAIN_WEIGHTS[d]))
-    return _Stage1Result(domain=winner, scores=scores, rejected=False)
-
-
-# ── Stage 1: domain classifier ────────────────────────────────────────────────
-
-class TestStage1Classifier:
-
-    def test_transfer_impact_cancelled(self):
-        r = _classify("how many trips were cancelled on the red line yesterday")
-        assert not r.rejected
-        assert r.domain == "transfer_impact"
-
-    def test_transfer_impact_cancellations_variant(self):
-        # Prefix matching — 'cancel' covers 'cancellations'
-        r = _classify("are there cancellations on the blue line")
-        assert not r.rejected
-        assert r.domain == "transfer_impact"
-
-    def test_transfer_impact_missed_connection(self):
-        r = _classify("I missed my connection at Metro Center")
-        assert not r.rejected
-        assert r.domain == "transfer_impact"
-
-    def test_delay_propagation_propagating_variant(self):
-        # The reported bug — 'propagating' was not matched before prefix fix
-        r = _classify("are there any delays propagating from Gallery Place")
-        assert not r.rejected
-        assert r.domain == "delay_propagation"
-
-    def test_delay_propagation_delayed_variant(self):
-        # Prefix matching — 'delay' covers 'delayed', 'delays', 'delaying'
-        r = _classify("the train is delayed at Farragut North")
-        assert not r.rejected
-        assert r.domain == "delay_propagation"
-
-    def test_delay_propagation_downstream(self):
-        r = _classify("how far downstream has the delay spread")
-        assert not r.rejected
-        assert r.domain == "delay_propagation"
-
-    def test_delay_propagation_behind_schedule(self):
-        # Multi-word signal
-        r = _classify("the red line is behind schedule")
-        assert not r.rejected
-        assert r.domain == "delay_propagation"
-
-    def test_accessibility_elevator(self):
-        r = _classify("is the elevator at Metro Center working")
-        assert not r.rejected
-        assert r.domain == "accessibility"
-
-    def test_accessibility_escalator_variant(self):
-        # Prefix matching — 'escalator' covers 'escalators'
-        r = _classify("escalators out of service at Gallery Place")
-        assert not r.rejected
-        assert r.domain == "accessibility"
-
-    def test_accessibility_wheelchair(self):
-        r = _classify("wheelchair accessible route please")
-        assert not r.rejected
-        assert r.domain == "accessibility"
-
-    def test_accessibility_outage(self):
-        r = _classify("elevator outage at Dupont Circle")
-        assert not r.rejected
-        assert r.domain == "accessibility"
-
-    def test_rejection_no_signals(self):
-        r = _classify("what is the weather like in DC today")
-        assert r.rejected
-        assert r.domain is None
-
-    def test_rejection_translate_false_positive_guard(self):
-        # Word-boundary prefix: 'late' must not match 'translate'
-        r = _classify("please translate this text for me")
-        assert r.rejected
-
-    def test_tiebreak_by_weight(self):
-        # Equal scores — delay_propagation (weight 3) beats transfer_impact (weight 2)
-        r = _classify("cancelled and delayed trips")
-        assert not r.rejected
-        assert r.domain == "delay_propagation"
-
-    def test_normalization_single_strong_signal(self):
-        # Single signal scores 1.0 — beats multi-weak domain
-        r = _classify("wheelchair accessible route please")
-        assert not r.rejected
-        assert r.domain == "accessibility"
-        assert r.scores["accessibility"] == 1.0
-
-    def test_scores_present_for_all_domains(self):
-        r = _classify("how many trips were cancelled yesterday")
-        assert set(r.scores.keys()) == {"transfer_impact", "accessibility", "delay_propagation"}
-
-    def test_rejected_result_has_all_zero_scores(self):
-        r = _classify("what is the weather like today")
-        assert r.rejected
-        assert all(s == 0.0 for s in r.scores.values())
-
-    def test_propagation_prefix_does_not_over_match(self):
-        # 'propagate' prefix should not match unrelated words
-        # 'properly' starts with 'prop' not 'propagate' — not a risk,
-        # but verify signal vocabulary does not fire on nonsense queries
-        r = _classify("the proposal was approved today")
-        assert r.rejected
 
 
 # ── JSON parsing ──────────────────────────────────────────────────────────────

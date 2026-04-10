@@ -84,7 +84,7 @@ You ONLY answer questions about these three domains:
   accessibility      — elevator/escalator outages, accessible pathway status, ADA infrastructure
 
 Return a single valid JSON object — no preamble, no markdown, no explanation.
-Required keys: domain, path, anchors, path_reasoning, anchor_notes, rejection_reason
+Required keys: domain, path, anchors, path_reasoning, anchor_notes, rejection_reason, use_gds
 
 domain: "transfer_impact" | "delay_propagation" | "accessibility" | null
   Set null if the query is not about WMATA transit disruptions, accessibility, or delays.
@@ -109,7 +109,22 @@ anchors (set to null when domain is null) — when provided, must have exactly t
 
 path_reasoning: one sentence explaining your path choice, or null if domain is null.
 anchor_notes: one sentence noting any inference made (e.g. route resolved from corridor name), or null.
-rejection_reason: one sentence explaining why the query is out of scope, or null if domain is not null.\
+rejection_reason: one sentence explaining why the query is out of scope, or null if domain is not null.
+use_gds: false (default — override only when the GDS section below is present and the query warrants it).\
+"""
+
+# Appended to the system prompt only when GDS is installed.
+_GDS_PROMPT_ADDON = """
+
+Graph Data Science (GDS) is available on this database.
+Set use_gds: true when the query implies graph algorithm reasoning such as:
+  - Finding the shortest or fastest path between stations
+  - Ranking stations by centrality (most connected, most critical, most used as transfer hub)
+  - Detecting communities or clusters of stations/routes
+  - Measuring how similar stations are based on their connectivity patterns
+  - Identifying weakly or strongly connected components in the service graph
+
+Do NOT set use_gds: true for plain lookups, counts, or filtering queries — those are answered with standard Cypher.\
 """
 
 # Corrective nudge appended to the prompt on a retry after JSON parse failure.
@@ -139,6 +154,7 @@ class _Stage1Result:
     rejection_reason: str | None
     parse_warning: str | None
     rejected: bool
+    use_gds: bool = False
 
 
 # ── Planner ───────────────────────────────────────────────────────────────────
@@ -178,11 +194,13 @@ class Planner:
         self._parse_window = 10
         self._parse_attempts: deque[bool] = deque(maxlen=self._parse_window)
         self._parse_fail_threshold = 0.6
+        self._gds_available: bool = slice_registry.gds_available
         log.debug(
-            "Planner ready — provider=%s model=%s strict=%s",
+            "Planner ready — provider=%s model=%s strict=%s gds=%s",
             llm_config.llm_provider,
             llm_config.llm_model,
             strict,
+            self._gds_available,
         )
 
     # ── Public interface ──────────────────────────────────────────────────────
@@ -223,6 +241,8 @@ class Planner:
         """
         anchor_types = '", "'.join(PlannerAnchors.__dataclass_fields__.keys())
         system_prompt = _STAGE1_SYSTEM_PROMPT.format(anchor_types=anchor_types)
+        if self._gds_available:
+            system_prompt += _GDS_PROMPT_ADDON
         user_message = f'Query: "{query}"'
 
         # Circuit breaker: skip retry if recent parse failure rate is high.
@@ -302,8 +322,13 @@ class Planner:
         raw_anchors = parsed.get("anchors") or {}
         anchors = _extract_anchors(raw_anchors)
 
+        # Only honour use_gds when GDS is actually installed — guard against
+        # the LLM hallucinating this flag when the prompt section was absent.
+        use_gds = bool(parsed.get("use_gds")) and self._gds_available
+
         log.debug(
-            "Stage 1 complete — domain=%s path=%s anchors=%s", domain, path, anchors
+            "Stage 1 complete — domain=%s path=%s use_gds=%s anchors=%s",
+            domain, path, use_gds, anchors,
         )
         return _Stage1Result(
             domain=domain,
@@ -314,6 +339,7 @@ class Planner:
             rejection_reason=None,
             parse_warning=None,
             rejected=False,
+            use_gds=use_gds,
         )
 
     def _invoke_llm(self, system_prompt: str, user_message: str) -> str:
@@ -341,6 +367,7 @@ class Planner:
             path_reasoning=stage1.path_reasoning,
             anchor_notes=stage1.anchor_notes,
             parse_warning=stage1.parse_warning,
+            use_gds=stage1.use_gds,
         )
 
     def _build_rejected_output(self, stage1: _Stage1Result) -> PlannerOutput:

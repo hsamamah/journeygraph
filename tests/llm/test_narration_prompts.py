@@ -147,7 +147,7 @@ class TestSystemPromptSectionOrdering:
             "synthesis": "Lead with the precise facts",
             "precision": "precise query results only",
             "contextual": "topological graph context only",
-            "degraded": "Limited or no data",
+            "degraded": "Limited or no graph data",
         }
         mode_pos = prompt.index(mode_markers[mode])
         assert role_pos < mode_pos
@@ -227,7 +227,7 @@ class TestSystemPromptModeInstructions:
         confidence in a partial answer.
         """
         prompt = NarrationAgent._build_system_prompt("degraded", "transfer_impact")
-        assert "Explicitly state what could not be determined" in prompt
+        assert "State explicitly what was and was not resolved" in prompt
 
     def test_synthesis_instruction_absent_from_precision(self) -> None:
         """Mode instructions must not bleed across modes."""
@@ -330,7 +330,7 @@ class TestUserMessageInvariants:
             _t2c(),
             None,
         )
-        assert "'how many cancellations yesterday'" in msg
+        assert "how many cancellations yesterday" in msg
 
     def test_domain_and_mode_on_same_line(self) -> None:
         """

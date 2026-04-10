@@ -64,14 +64,15 @@ class QueryWriterOutput:
 
 
 class QueryWriter:
-    def __init__(self, llm_config: LLMConfig) -> None:
+    def __init__(self, llm_config: LLMConfig, *, use_gds: bool = False) -> None:
         self.client = anthropic.Anthropic(api_key=llm_config.anthropic_api_key)
         self._model = llm_config.llm_model
         self._max_tokens = llm_config.llm_max_tokens
+        self._gds_enabled: bool = use_gds
 
     def run(self, input: QueryWriterInput) -> QueryWriterOutput:
         system_prompt = self._build_system_prompt(
-            input.conventions, input.patterns, input.schema_slice_obj
+            input.conventions, input.patterns, input.schema_slice_obj, gds_enabled=self._gds_enabled
         )
         user_message = self._build_user_message(
             input.user_query,
@@ -110,6 +111,7 @@ class QueryWriter:
         conventions: dict,
         patterns: list[str],
         schema_slice: SchemaSlice | None = None,
+        gds_enabled: bool = False,
     ) -> str:
         parts = [
             "You are a Cypher query writer for a Neo4j knowledge graph of the WMATA transit system.",
@@ -151,6 +153,9 @@ class QueryWriter:
                 warn_list = "\n".join(f"  - {w}" for w in schema_slice.warnings)
                 parts.append(f"IMPORTANT data quirks — read before writing Cypher:\n{warn_list}")
 
+        if gds_enabled:
+            parts.append(_GDS_SYSTEM_SECTION)
+
         if conventions:
             parts.append(f"System conventions:\n{json.dumps(conventions, indent=2)}")
         if patterns:
@@ -190,10 +195,13 @@ class QueryWriter:
             f"\nSchema: {schema_slice}{refinement_block}"
         )
 
-def call_neo4j_text2cypher(query: str, schema: str = None, url: str = None, user: str = None, password: str = None) -> dict:
+def _call_neo4j_text2cypher(query: str, schema: str = None, url: str = None, user: str = None, password: str = None) -> dict:
+    """Experimental: call Neo4j's built-in Text2Cypher REST endpoint. Not used by the main pipeline."""
     url = url or os.environ.get("NEO4J_TEXT2CYPHER_URL", "http://localhost:7474/ai/text2cypher")
     user = user or os.environ.get("NEO4J_USER", "neo4j")
-    password = password or os.environ.get("NEO4J_PASSWORD", "test")
+    password = password or os.environ.get("NEO4J_PASSWORD")
+    if not password:
+        raise ValueError("NEO4J_PASSWORD environment variable must be set")
     headers = {"Accept": "application/json"}
     payload = {"question": query}
     if schema:
@@ -203,6 +211,50 @@ def call_neo4j_text2cypher(query: str, schema: str = None, url: str = None, user
     return resp.json()
 
 
+# Allowed GDS procedure names — the validator enforces this whitelist when
+# CALL gds.* appears in generated Cypher.
+GDS_PROCEDURE_WHITELIST: frozenset[str] = frozenset({
+    # Graph projection (anonymous/ephemeral only — gds.graph.drop is intentionally excluded)
+    "gds.graph.project",
+    # Path finding
+    "gds.shortestpath.dijkstra.stream",
+    "gds.allshortestpaths.dijkstra.stream",
+    "gds.shortestpath.astar.stream",
+    "gds.bfs.stream",
+    "gds.dfs.stream",
+    # Centrality
+    "gds.pagerank.stream",
+    "gds.betweenness.stream",
+    "gds.degree.stream",
+    "gds.closeness.stream",
+    "gds.articlerank.stream",
+    "gds.eigenvector.stream",
+    # Community detection
+    "gds.louvain.stream",
+    "gds.labelpropagation.stream",
+    "gds.wcc.stream",
+    "gds.scc.stream",
+    "gds.trianglecount.stream",
+    "gds.localclusteringcoefficient.stream",
+    # Similarity
+    "gds.nodesimilarity.stream",
+    "gds.knn.stream",
+    # Utility (gds.version excluded — startup probe only, not a query-answering procedure)
+    "gds.list",
+})
+
+# Human-readable algorithm categories injected into the system prompt when GDS is enabled.
+_GDS_SYSTEM_SECTION = """\
+Graph Data Science (GDS) procedures are available. Use anonymous projections (no named graph lifecycle).
+Allowed GDS procedure categories:
+  Path finding:         gds.shortestPath.dijkstra.stream, gds.allShortestPaths.dijkstra.stream, gds.shortestPath.astar.stream, gds.bfs.stream
+  Centrality:           gds.pageRank.stream, gds.betweenness.stream, gds.degree.stream, gds.closeness.stream
+  Community detection:  gds.louvain.stream, gds.labelPropagation.stream, gds.wcc.stream, gds.scc.stream, gds.triangleCount.stream
+  Similarity:           gds.nodeSimilarity.stream, gds.knn.stream
+  Projection:           gds.graph.project (anonymous — do NOT assign to a named variable that outlives the query)
+IMPORTANT: Always use ephemeral/anonymous projections inline. Do not use gds.graph.drop or named graph management."""
+
+
 def run_query_writer(
     query: str,
     planner_output: PlannerOutput,
@@ -210,6 +262,7 @@ def run_query_writer(
     schema_slice: SchemaSlice | None = None,
     resolved_anchors: dict[str, list[str]] | None = None,
     refinement_errors: list[str] | None = None,
+    use_gds: bool = False,
 ) -> QueryWriterOutput:
     """
     Construct QueryWriterInput, load conventions/patterns, and run QueryWriter.
@@ -227,6 +280,8 @@ def run_query_writer(
                           {'yesterday': ['20260408'], 'Red Line': ['RED']}.
                           Injected into the user message so the LLM writes
                           literal values instead of $parameters.
+        use_gds:          When True, GDS procedure whitelist and few-shot examples
+                          from queries/gds/analytical.cypher are added to the prompt.
     """
     with open(PROJECT_ROOT / "src" / "llm" / "conventions.json") as f:
         conventions = json.load(f)
@@ -239,10 +294,19 @@ def run_query_writer(
         with open(analytical_path) as f:
             patterns.append(f"\n// --- analytical.cypher ---\n" + f.read())
 
+    if use_gds:
+        gds_path = PROJECT_ROOT / "queries" / "gds" / "analytical.cypher"
+        if gds_path.is_file():
+            with open(gds_path) as f:
+                patterns.append(f"\n// --- gds/analytical.cypher ---\n" + f.read())
+        else:
+            log.warning("query_writer | use_gds=True but queries/gds/analytical.cypher not found")
+
     log.info(
-        "query_writer | building prompt | domain=%s slice_injected=%s few_shot_files=%d",
+        "query_writer | building prompt | domain=%s slice_injected=%s use_gds=%s few_shot_files=%d",
         domain,
         schema_slice is not None,
+        use_gds,
         len(patterns),
     )
 
@@ -256,4 +320,4 @@ def run_query_writer(
         resolved_anchors=resolved_anchors or {},
         refinement_errors=refinement_errors or [],
     )
-    return QueryWriter(llm_config).run(query_writer_input)
+    return QueryWriter(llm_config, use_gds=use_gds).run(query_writer_input)

@@ -160,6 +160,10 @@ class SliceRegistry:
 
     All three DB queries run in a single startup pass to minimise
     connection overhead. Hard fails immediately if the DB is unreachable.
+
+    GDS availability is detected during the same startup pass via
+    CALL gds.version(). If GDS is not installed the call raises and
+    gds_available is set to False — this is never a strict-mode error.
     """
 
     def __init__(self, neo4j: Neo4jManager, *, strict: bool = False) -> None:
@@ -172,6 +176,7 @@ class SliceRegistry:
         """
         self._strict = strict
         self._slices: dict[str, SchemaSlice] = {}
+        self.gds_available: bool = False
         self._load_and_validate(neo4j)
 
     # ── Public interface ──────────────────────────────────────────────────────
@@ -331,6 +336,17 @@ class SliceRegistry:
             len(db_rel_types),
             len(property_registry),
         )
+
+        # GDS availability check — soft fail; absence is expected when GDS is
+        # not installed. Never raises regardless of strict mode.
+        try:
+            neo4j.query("CALL gds.version() YIELD gdsVersion RETURN gdsVersion")
+            self.gds_available = True
+            log.info("SliceRegistry: GDS detected — analytical graph algorithms enabled")
+        except Exception:
+            self.gds_available = False
+            log.info("SliceRegistry: GDS not detected — graph algorithm queries disabled")
+
         return db_labels, db_rel_types, property_registry
 
     # ── Step 4: validation ────────────────────────────────────────────────────

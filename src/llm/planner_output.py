@@ -91,3 +91,4 @@ class PlannerOutput:
     path_reasoning: str | None
     anchor_notes: str | None
     parse_warning: str | None
+    use_gds: bool = False

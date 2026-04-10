@@ -438,6 +438,7 @@ def _run_query(
                 schema_slice=schema_slice,
                 resolved_anchors=resolutions.as_flat_dict(),
                 refinement_errors=refinement_errors or None,
+                use_gds=planner_output.use_gds,
             )
             print(f"\n[Query Writer — attempt {attempt}/{_MAX_ATTEMPTS}]")
             print("Cypher Query:\n", query_writer_output.cypher_query)
