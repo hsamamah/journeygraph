@@ -14,8 +14,12 @@ log = get_logger(__name__)
 
 # Reject any query containing write clauses — the pipeline is strictly read-only.
 # Checked before the query touches the driver so a single early return covers all paths.
+# DROP as a Cypher keyword appears standalone (e.g. DROP INDEX) but not inside a
+# qualified procedure name (gds.graph.drop). Use a negative lookbehind on '.' to
+# avoid rejecting GDS graph lifecycle calls.
 _WRITE_CLAUSE_RE = re.compile(
-    r'\b(CREATE|MERGE|SET|DELETE|DETACH\s+DELETE|REMOVE|DROP)\b',
+    r'\b(CREATE|MERGE|SET|DELETE|DETACH\s+DELETE|REMOVE)\b'
+    r'|(?<!\.)\bDROP\b',
     re.IGNORECASE,
 )
 

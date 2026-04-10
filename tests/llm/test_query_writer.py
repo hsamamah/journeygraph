@@ -535,9 +535,9 @@ def test_cypher_validator_gds_proc_case_insensitive() -> None:
     assert result.valid is True
 
 
-def test_cypher_validator_gds_graph_drop_blocked() -> None:
-    """gds.graph.drop is excluded from the whitelist to prevent stateful side-effects."""
-    assert "gds.graph.drop" not in GDS_PROCEDURE_WHITELIST
+def test_cypher_validator_gds_graph_drop_allowed() -> None:
+    """gds.graph.drop is in the whitelist — GDS 2.6+ requires named graph lifecycle."""
+    assert "gds.graph.drop" in GDS_PROCEDURE_WHITELIST
 
 
 def test_cypher_validator_gds_version_not_in_whitelist() -> None:

@@ -214,8 +214,9 @@ def _call_neo4j_text2cypher(query: str, schema: str = None, url: str = None, use
 # Allowed GDS procedure names — the validator enforces this whitelist when
 # CALL gds.* appears in generated Cypher.
 GDS_PROCEDURE_WHITELIST: frozenset[str] = frozenset({
-    # Graph projection (anonymous/ephemeral only — gds.graph.drop is intentionally excluded)
+    # Named graph lifecycle — required for GDS 2.6+ (anonymous inline maps not supported)
     "gds.graph.project",
+    "gds.graph.drop",
     # Path finding
     "gds.shortestpath.dijkstra.stream",
     "gds.allshortestpaths.dijkstra.stream",
@@ -245,14 +246,22 @@ GDS_PROCEDURE_WHITELIST: frozenset[str] = frozenset({
 
 # Human-readable algorithm categories injected into the system prompt when GDS is enabled.
 _GDS_SYSTEM_SECTION = """\
-Graph Data Science (GDS) procedures are available. Use anonymous projections (no named graph lifecycle).
+Graph Data Science (GDS) procedures are available. GDS 2.6+ requires named graph projections — \
+anonymous inline maps are NOT supported. Always use the two-step pattern:
+  1. CALL gds.graph.project('tmpName', nodeLabels, relConfig) YIELD graphName
+  2. CALL gds.algorithm.stream(graphName, {}) YIELD ...
+Drop at end with: CALL gds.graph.drop('tmpName', false) YIELD graphName RETURN graphName
+
+The WMATA graph has no direct Station-to-Station relationship. Use the Route-Station bipartite graph:
+  nodeLabels: ['Station', 'Route']
+  relConfig:  {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}}
+
 Allowed GDS procedure categories:
+  Graph lifecycle:      gds.graph.project, gds.graph.drop
   Path finding:         gds.shortestPath.dijkstra.stream, gds.allShortestPaths.dijkstra.stream, gds.shortestPath.astar.stream, gds.bfs.stream
   Centrality:           gds.pageRank.stream, gds.betweenness.stream, gds.degree.stream, gds.closeness.stream
   Community detection:  gds.louvain.stream, gds.labelPropagation.stream, gds.wcc.stream, gds.scc.stream, gds.triangleCount.stream
-  Similarity:           gds.nodeSimilarity.stream, gds.knn.stream
-  Projection:           gds.graph.project (anonymous — do NOT assign to a named variable that outlives the query)
-IMPORTANT: Always use ephemeral/anonymous projections inline. Do not use gds.graph.drop or named graph management."""
+  Similarity:           gds.nodeSimilarity.stream, gds.knn.stream"""
 
 
 def run_query_writer(
