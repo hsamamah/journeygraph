@@ -24,7 +24,7 @@
 //   $station_id       — resolved station id e.g. 'STN_A01_C01'
 //   $station_name     — fallback name match e.g. 'Gallery Place'
 //
-// end_time is nullable — add IS NOT NULL when querying resolved delays only.
+// end_time is nullable — null while active, set when resolved. Add IS NOT NULL for resolved-only queries.
 // Absence of a StopTimeUpdate does NOT mean on-time — on-time stops are omitted.
 // ═══════════════════════════════════════════════════════════════════════════
 

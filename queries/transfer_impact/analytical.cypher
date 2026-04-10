@@ -97,7 +97,7 @@ MATCH (d)<-[:ON_DATE]-(i:Interruption:Skip)-[:AFFECTS_ROUTE]->(r:Route)
 MATCH (i)-[:AFFECTS_TRIP]->(t:Trip)-[:FOLLOWS]->(rp:RoutePattern)-[:BELONGS_TO]->(r)
 RETURN
   r.route_short_name            AS route,
-  r.mode                        AS mode,
+  CASE WHEN r:Rail THEN 'rail' WHEN r:Bus THEN 'bus' ELSE 'unknown' END AS mode,
   count(DISTINCT i)             AS skip_events,
   count(DISTINCT t)             AS affected_trips,
   d.date                        AS date

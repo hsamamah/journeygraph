@@ -124,7 +124,8 @@ class SchemaSlice:
                                 moved here. Included in the validator whitelist.
         property_registry:      {label: [property_name, ...]} for all labels in
                                 this slice (required + optional). Built from
-                                db.schema.nodeTypeProperties() at startup.
+                                db.schema.nodeTypeProperties() at startup, then
+                                merged with properties_optional from the YAML.
     """
 
     domain: str
@@ -139,6 +140,10 @@ class SchemaSlice:
     nodes_optional: list[str] = field(default_factory=list)
     relationships_optional: list[RelationshipTriple] = field(default_factory=list)
     property_registry: dict[str, list[str]] = field(default_factory=dict)
+    # Properties declared in the YAML that are valid schema but sparse in the
+    # live graph (e.g. end_time on Interruption — only set when resolved).
+    # Merged into property_registry at build time so the validator whitelists them.
+    properties_optional: dict[str, list[str]] = field(default_factory=dict)
 
 
 # ── SliceRegistry ─────────────────────────────────────────────────────────────
@@ -469,10 +474,29 @@ class SliceRegistry:
                     slice_labels.add(lbl)
 
         scoped_properties = {
-            label: props
+            label: list(props)
             for label, props in property_registry.items()
             if label in slice_labels
         }
+
+        # Merge YAML-declared optional properties — these are valid schema but
+        # sparse in the live graph (e.g. end_time only present on resolved
+        # Interruption nodes). Neo4j schema introspection misses them when every
+        # current node has the property null/unset.
+        properties_optional: dict[str, list[str]] = raw.get("properties_optional", {})
+        for label, props in properties_optional.items():
+            if label not in slice_labels:
+                log.warning(
+                    "Slice '%s': properties_optional label '%s' is not declared "
+                    "under nodes/nodes_optional — skipping to avoid phantom whitelist entries",
+                    domain,
+                    label,
+                )
+                continue
+            existing = scoped_properties.setdefault(label, [])
+            for prop in props:
+                if prop not in existing:
+                    existing.append(prop)
 
         return SchemaSlice(
             domain=domain,
@@ -483,4 +507,5 @@ class SliceRegistry:
             nodes_optional=nodes_optional,
             relationships_optional=relationships_optional,
             property_registry=scoped_properties,
+            properties_optional=properties_optional,
         )

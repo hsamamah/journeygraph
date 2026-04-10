@@ -38,7 +38,7 @@ nodes_optional:
 # Static-to-static relationships always present after base layers load.
 # Relationships touching optional nodes are auto-derived as optional.
 relationships:
-  - { from: "Date",         type: "ON_DATE",      to: "Interruption"  }
+  - { from: "Interruption", type: "ON_DATE",       to: "Date"          }
   - { from: "Interruption", type: "AFFECTS_TRIP",  to: "Trip"          }
   - { from: "Interruption", type: "AFFECTS_ROUTE", to: "Route"         }
   - { from: "Trip",         type: "SCHEDULED_AT",  to: "Platform"      }

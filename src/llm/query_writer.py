@@ -28,12 +28,12 @@ import requests
 from typing import TYPE_CHECKING
 import json
 import os
-import glob
 import re
 
 import anthropic
 
 from src.common.logger import get_logger
+from src.common.paths import PROJECT_ROOT
 from src.llm.planner_output import PlannerAnchors
 
 if TYPE_CHECKING:
@@ -228,17 +228,16 @@ def run_query_writer(
                           Injected into the user message so the LLM writes
                           literal values instead of $parameters.
     """
-    with open(os.path.join("src", "llm", "conventions.json")) as f:
+    with open(PROJECT_ROOT / "src" / "llm" / "conventions.json") as f:
         conventions = json.load(f)
 
     domain = getattr(planner_output, "schema_slice_key", "physical")
-    queries_dir = os.path.join("queries", domain)
+    analytical_path = PROJECT_ROOT / "queries" / domain / "analytical.cypher"
     patterns: list[str] = []
 
-    source_dir = queries_dir if os.path.isdir(queries_dir) else os.path.join("queries", "physical")
-    for cypher_file in sorted(glob.glob(os.path.join(source_dir, "*.cypher"))):
-        with open(cypher_file) as f:
-            patterns.append(f"\n// --- {os.path.basename(cypher_file)} ---\n" + f.read())
+    if analytical_path.is_file():
+        with open(analytical_path) as f:
+            patterns.append(f"\n// --- analytical.cypher ---\n" + f.read())
 
     log.info(
         "query_writer | building prompt | domain=%s slice_injected=%s few_shot_files=%d",

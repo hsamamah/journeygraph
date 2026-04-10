@@ -58,8 +58,17 @@ def cypher_validator(
             errors.append(f"Relationship type '{rel}' not in whitelist for schema slice '{domain}'")
 
     # Properties — property_registry is {label: [prop, ...]}
+    # Exclude UNWIND aliases: `UNWIND expr AS alias` binds a map variable whose
+    # field access (alias.key) looks like a property access but is not.
+    unwind_aliases: set[str] = set(
+        re.findall(r'\bUNWIND\b\s+.+?\bAS\b\s+(\w+)', cypher, re.IGNORECASE)
+    )
     allowed_props = {prop for props in property_registry.values() for prop in props}
-    used_props = set(re.findall(r'\.(\w+)', cypher))
+    used_props = {
+        prop
+        for base, prop in re.findall(r'(\w+)\.(\w+)', cypher)
+        if base not in unwind_aliases
+    }
     for prop in used_props:
         if prop not in allowed_props:
             errors.append(f"Property '{prop}' not in registry for schema slice '{domain}'")

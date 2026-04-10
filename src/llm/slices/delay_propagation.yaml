@@ -63,10 +63,18 @@ patterns:
   - "(:Interruption:Delay)-[:AFFECTS_TRIP]->(:Trip)-[:FOLLOWS]->(:RoutePattern)-[:BELONGS_TO]->(:Route)"
   - "(:Interruption:Delay)-[:SOURCED_FROM]->(:TripUpdate)-[:HAS_STOP_UPDATE]->(:StopTimeUpdate)-[:AT_STOP]->(:Platform)"
 
+# ── Optional properties ───────────────────────────────────────────────────────
+# Properties valid in the schema but sparse in the live graph — present only
+# on a subset of nodes. Neo4j introspection misses them when no current node
+# has the property set. Merged into the validator whitelist at startup.
+properties_optional:
+  Interruption:
+    - end_time    # null while active; set when the interruption resolves
+
 # ── WMATA-specific warnings ───────────────────────────────────────────────────
 warnings:
   - "Delay threshold is 300 seconds (5 minutes) — TripUpdates below this threshold produce no :Interruption node"
-  - "end_time is nullable on :Interruption — add IS NOT NULL filter when querying resolved delays only"
+  - "end_time is nullable on :Interruption — null means the delay is still active; set only when the interruption resolves. Always add IS NOT NULL when filtering for resolved delays"
   - "On-time stops within disrupted trips are omitted from StopTimeUpdate — absence of a StopTimeUpdate does NOT mean on-time"
   - "severity on :Interruption:Delay: WARNING=300-899s, SEVERE=900s+ (15 minutes)"
   - "Use :Delay label directly — do not filter WHERE interruption_type='delay'"

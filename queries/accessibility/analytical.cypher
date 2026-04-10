@@ -73,18 +73,20 @@ RETURN
   el.level_index               AS to_index
 ORDER BY sl.level_index;
 
-// ── Q4: Elevator outages + route disruptions at a station (independent) ──
-// "Are there elevator outages at Metro Center, and any service disruptions?"
-// OutageEvent and Interruption are SEPARATE sources — query independently,
-// never join them. count(DISTINCT ...) handles OPTIONAL MATCH fan-out.
+// ── Q4: Active outage count at a station ─────────────────────────────────
+// "How many elevators are out of service at Metro Center?"
+// count(DISTINCT o) avoids fan-out from multiple elevator matches.
+// NULL o.unit_name means no active outage for that elevator (working).
+// NOTE: Do NOT use AFFECTS_ROUTE or SERVES here — those relationships are
+// not in the accessibility schema slice. Route disruptions are a separate
+// domain (delay_propagation). Query only OutageEvent via AFFECTS.
 MATCH (s:Station {id: $station_id})
 OPTIONAL MATCH (s)-[:CONTAINS]->(e:Pathway:Elevator)
 OPTIONAL MATCH (o:OutageEvent)-[:AFFECTS]->(e)
-OPTIONAL MATCH (i:Interruption)-[:AFFECTS_ROUTE]->(r:Route)-[:SERVES]->(s)
 RETURN
   s.name                       AS station,
-  count(DISTINCT o)            AS active_outages,
-  count(DISTINCT i)            AS route_disruptions;
+  count(DISTINCT e)            AS total_elevators,
+  count(DISTINCT o)            AS active_outages;
 
 // ── Q5: Escalator outage status at a station ─────────────────────────────
 // Same OPTIONAL MATCH pattern as Q1 — null fields mean no recorded outage.
