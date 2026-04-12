@@ -23,19 +23,36 @@ log = logging.getLogger(__name__)
 def df_to_rows(df: pd.DataFrame) -> list[dict]:
     """Convert DataFrame to list of dicts, replacing NaN/NaT with None.
 
-    Handles non-scalar column values (lists, arrays) safely by passing them
-    through unchanged rather than raising on pd.isna().
+    Scalar (non-object) columns are converted via vectorised pandas C code.
+    Object-dtype columns use a per-value fallback to handle non-scalar values
+    (lists, arrays) that would raise on pd.isna().
     """
     def _to_none(v: object) -> object:
         try:
             return None if pd.isna(v) else v
         except (TypeError, ValueError):
-            return v  # non-scalar (list, array) — pass through unchanged
+            return v  # non-scalar — pass through unchanged
 
-    return [
-        {k: _to_none(v) for k, v in row.items()}
-        for row in df.to_dict(orient="records")
-    ]
+    obj_cols = [c for c in df.columns if df[c].dtype == object]
+    scalar_cols = [c for c in df.columns if df[c].dtype != object]
+
+    if not obj_cols:
+        # All scalar: fully vectorised path
+        return df.where(df.notna(), other=None).to_dict(orient="records")
+
+    if not scalar_cols:
+        # All object: fall back to per-value path (rare)
+        return [
+            {k: _to_none(v) for k, v in row.items()}
+            for row in df.to_dict(orient="records")
+        ]
+
+    # Mixed: vectorise scalar columns, per-value for object columns
+    out = df.copy()
+    out[scalar_cols] = df[scalar_cols].where(df[scalar_cols].notna(), other=None)
+    for col in obj_cols:
+        out[col] = df[col].apply(_to_none)
+    return out.to_dict(orient="records")
 
 
 class Neo4jManager:
@@ -91,9 +108,13 @@ class Neo4jManager:
         total = len(rows)
         if total == 0:
             return 0
-        for i in range(0, total, batch_size):
-            chunk = rows[i : i + batch_size]
-            self.execute_write(cypher, parameters={"rows": chunk})
-            done = min(i + batch_size, total)
-            log.info("  %s: %d / %d", label, done, total)
+        # Reuse a single session for all chunks — session acquisition is not
+        # free (pool locking, state reset) and doing it per-chunk multiplies
+        # the overhead by total / batch_size (up to 800× for large datasets).
+        with self.driver.session() as session:
+            for i in range(0, total, batch_size):
+                chunk = rows[i : i + batch_size]
+                session.execute_write(lambda tx, c=chunk: tx.run(cypher, {"rows": c}))
+                done = min(i + batch_size, total)
+                log.info("  %s: %d / %d", label, done, total)
         return total

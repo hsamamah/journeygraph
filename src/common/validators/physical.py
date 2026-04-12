@@ -388,4 +388,35 @@ def validate_post_load(neo4j_manager: "Neo4jManager") -> ValidationResult:
         n = run_count_check(neo4j_manager, cypher)
         result.note(f"{label}: {n}")
 
+    # ── Check 13: Level nodes are connected via ON_LEVEL ─────────────────────
+    #
+    # Level nodes are the only physical nodes that arrive with no relationships
+    # until the ON_LEVEL, STARTING_LEVEL, and ENDING_LEVEL loaders run.
+    # A high count of isolated Level nodes indicates those loaders failed
+    # silently (e.g. level_id mismatch between stops.txt and levels.txt).
+    # Warn rather than block — partial connectivity is still useful.
+
+    n_isolated = run_count_check(
+        neo4j_manager,
+        """
+        MATCH (l:Level)
+        WHERE NOT (l)<-[:ON_LEVEL|STARTING_LEVEL|ENDING_LEVEL]-()
+        RETURN count(l) AS n
+        """,
+    )
+    n_total = run_count_check(neo4j_manager, "MATCH (l:Level) RETURN count(l) AS n")
+    if n_isolated == 0:
+        result.note(f"All {n_total} Level nodes have at least one incoming level relationship")
+    elif n_total > 0 and n_isolated / n_total > 0.5:
+        result.warn(
+            f"{n_isolated}/{n_total} Level nodes have no incoming ON_LEVEL, "
+            f"STARTING_LEVEL, or ENDING_LEVEL relationship — "
+            f"level_id values may not match between stops.txt and levels.txt"
+        )
+    else:
+        result.note(
+            f"{n_isolated}/{n_total} Level nodes are not connected — "
+            f"may be levels referenced by no stop or pathway in this feed"
+        )
+
     return result

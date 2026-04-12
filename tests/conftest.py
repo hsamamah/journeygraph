@@ -347,6 +347,137 @@ def _gtfs_path(name: str) -> Path:
     return _UPLOADS / f"{name}.txt"  # will trigger skip if missing
 
 
+# ── Accessibility layer fixtures ──────────────────────────────────────────────
+
+
+@pytest.fixture
+def raw_outage_rows() -> list[dict]:
+    """
+    Minimal synthetic WMATA ElevatorIncidents API rows.
+    Covers: ESCALATOR + ELEVATOR, all severity levels, nullable EstimatedReturnToService.
+    """
+    return [
+        dict(
+            UnitName="A02W03",
+            UnitType="ESCALATOR",
+            UnitStatus=None,
+            StationCode="A02",
+            StationName="Farragut North",
+            LocationDescription="Escalator between street and mezzanine",
+            SymptomCode=None,
+            SymptomDescription="Minor Repair",
+            TimeOutOfService="08:00",
+            TimeUpdated="09:00",
+            DisplayOrder=1,
+            DateOutOfService="2024-01-15T08:00:00",
+            DateUpdated="2024-01-15T09:00:00",
+            EstimatedReturnToService="2024-01-16T08:00:00",
+        ),
+        dict(
+            UnitName="A02W04",
+            UnitType="ELEVATOR",
+            UnitStatus=None,
+            StationCode="A02",
+            StationName="Farragut North",
+            LocationDescription="Elevator between mezzanine and platform",
+            SymptomCode=None,
+            SymptomDescription="Major Repair",
+            TimeOutOfService="10:00",
+            TimeUpdated="11:00",
+            DisplayOrder=2,
+            DateOutOfService="2024-01-15T10:00:00",
+            DateUpdated="2024-01-15T11:00:00",
+            EstimatedReturnToService=None,
+        ),
+        dict(
+            UnitName="C03S01",
+            UnitType="ESCALATOR",
+            UnitStatus=None,
+            StationCode="C03",
+            StationName="Farragut West",
+            LocationDescription="Escalator between street and mezzanine",
+            SymptomCode=None,
+            SymptomDescription="Modernization",
+            TimeOutOfService="07:00",
+            TimeUpdated="07:30",
+            DisplayOrder=3,
+            DateOutOfService="2024-01-14T07:00:00",
+            DateUpdated="2024-01-14T07:30:00",
+            EstimatedReturnToService="2024-01-21T07:00:00",
+        ),
+    ]
+
+
+@pytest.fixture
+def raw_outages_dict(raw_outage_rows) -> dict:
+    """Dict wrapping raw rows as a DataFrame — matches extract.run() output."""
+    import pandas as pd
+    return {"outages": pd.DataFrame(raw_outage_rows)}
+
+
+@pytest.fixture
+def pathway_candidates_df() -> "pd.DataFrame":
+    """
+    Minimal Pathway candidates DataFrame matching _enrich_candidates() output.
+    Covers: mode 4 (escalator) and mode 5 (elevator) at two stations.
+
+    NODE_ encoding: NODE_{station}_{zone}_{type}{seq}_{pos}
+    from_desc / to_desc mirror the GTFS stop_desc values that Strategy F uses
+    for description-based matching; from_seq / to_seq are extracted from the
+    ESC/ELE number in the stop_id (e.g. ESC1 → 1).
+    """
+    import pandas as pd
+    return pd.DataFrame([
+        # A02 — escalator, W zone, street-to-mezzanine (_BT)
+        dict(
+            pathway_id="A02_ESC_W_BT",
+            from_stop_id="NODE_A02_W_ESC1_BT", to_stop_id="NODE_A02_W_FG_PAID",
+            mode=4,
+            from_desc="Bottom of Escalator Between Street and Mezzanine",
+            to_desc="",
+            from_seq=1, to_seq=None,
+        ),
+        # A02 — escalator, W zone, mezzanine-to-platform (_TP)
+        dict(
+            pathway_id="A02_ESC_W_TP",
+            from_stop_id="NODE_A02_W_ESC2_TP", to_stop_id="NODE_A02_W_PLT",
+            mode=4,
+            from_desc="Bottom of Escalator Between Mezzanine and Platform",
+            to_desc="",
+            from_seq=2, to_seq=None,
+        ),
+        # A02 — elevator, W zone; single-unit pathway, no _BT/_TP split.
+        dict(
+            pathway_id="A02_ELE_W",
+            from_stop_id="NODE_A02_W_ELE1", to_stop_id="NODE_A02_W_ELE2",
+            mode=5,
+            from_desc="", to_desc="",
+            from_seq=1, to_seq=2,
+        ),
+        # C03 — escalator, S zone, street-to-mezzanine (_BT)
+        dict(
+            pathway_id="C03_ESC_S_BT",
+            from_stop_id="NODE_C03_S_ESC1_BT", to_stop_id="NODE_C03_S_FG_PAID",
+            mode=4,
+            from_desc="Bottom of Escalator Between Street and Mezzanine",
+            to_desc="",
+            from_seq=1, to_seq=None,
+        ),
+    ])
+
+
+@pytest.fixture
+def real_pathways_df():
+    """Real pathways.txt from GTFS data (mode 4/5 only). Skipped if file absent."""
+    path = _gtfs_path("pathways")
+    if not path.exists():
+        pytest.skip(f"Real pathways file not found at {path}")
+    import pandas as pd
+    df = pd.read_csv(path, dtype=str)
+    df["mode"] = pd.to_numeric(df.get("pathway_mode", df.get("mode", None)), errors="coerce")
+    return df[df["mode"].isin([4, 5])].reset_index(drop=True)
+
+
 @pytest.fixture
 def real_stops_df():
     path = _gtfs_path("stops")

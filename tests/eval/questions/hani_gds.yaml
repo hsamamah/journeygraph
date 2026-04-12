@@ -1,0 +1,275 @@
+- id: hani_gds_001
+  question: Which stations are the most important transfer hubs on the WMATA metro network?
+  domain: transfer_impact
+  anchors: []
+  anchor_complexity: single
+  query_mode: text2cypher
+  hop_depth: shallow
+  temporal: null
+  category: happy_path
+  oracle_cypher: "CALL gds.graph.project('tmpEval001', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.pageRank.stream(graphName)\nYIELD nodeId,\
+    \ score\nWITH gds.util.asNode(nodeId) AS node, score\nWHERE node:Station\nRETURN node.name AS station_name,\
+    \ node.id AS station_id, round(score, 4) AS pagerank_score\nORDER BY pagerank_score DESC\nLIMIT 10\n"
+  ground_truth: A correct answer must identify L'Enfant Plaza and Metro Center as the two most important
+    transfer hubs on the WMATA network, with L'Enfant Plaza having the highest PageRank score of 1.2525
+    and Metro Center second at 1.1136. The answer should acknowledge that Fort Totten and Gallery Place
+    are the next tier of important hubs with equal scores of 0.9666, followed by a group of six stations
+    (Rosslyn, Federal Triangle, Smithsonian, McPherson Square, Farragut West, and Foggy Bottom-GWU) all
+    sharing a PageRank score of 0.7747. A correct answer must not suggest causation for why these stations
+    are important hubs but may explain that importance is measured by network connectivity and transfer
+    frequency as reflected in the PageRank algorithm.
+  notes: 'Baseline GDS happy path. Tests that the Planner sets use_gds=true for centrality questions and
+    that QueryWriter injects GDS few-shot examples. PageRank on the Route-Station bipartite graph (Station
+    and Route nodes connected by SERVES) reveals the most connected interchange stations (L''Enfant Plaza,
+    Metro Center expected at the top). Named graph projection required — GDS 2.6.9 does not accept anonymous
+    inline maps.
+
+    '
+- id: hani_gds_002
+  question: What is the shortest path between Metro Center and Pentagon City?
+  domain: transfer_impact
+  anchors:
+  - Metro Center
+  - Pentagon City
+  anchor_complexity: multi
+  query_mode: text2cypher
+  hop_depth: deep
+  temporal: null
+  category: happy_path
+  oracle_cypher: "CALL gds.graph.project('tmpEval002', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nMATCH (source:Station {id: 'STN_A01_C01'}), (target:Station\
+    \ {id: 'STN_C08'})\nCALL gds.shortestPath.dijkstra.stream(graphName, {sourceNode: source, targetNode:\
+    \ target})\nYIELD nodeIds, totalCost\nRETURN\n    [nodeId IN nodeIds | gds.util.asNode(nodeId).name]\
+    \ AS path_nodes,\n    toInteger(totalCost) AS hop_count\nORDER BY hop_count ASC\nLIMIT 1\n"
+  ground_truth: '# Ground Truth Statement
+
+
+    The shortest path between Metro Center and Pentagon City consists of 2 hops. While the oracle query
+    result contains a null value for the intermediate node name, a correct answer must accurately convey
+    that these two stations are connected by exactly 2 hops. A correct answer should not speculate about
+    or name the intermediate station if that information is not definitively known.'
+  notes: 'Multi-anchor GDS path finding. Tests anchor resolver for two stations and Dijkstra shortest
+    path via the Route-Station bipartite graph. Metro Center (STN_A01_C01) to Pentagon City (STN_C08)
+    path traverses through the Blue/Yellow route node. The path_nodes list includes intermediate Route
+    nodes (shown as null names) between the two stations.
+
+    '
+- id: hani_gds_003
+  question: Which stations are the biggest choke points on the metro network — if any of them closed,
+    the most routes would be cut off?
+  domain: transfer_impact
+  anchors: []
+  anchor_complexity: single
+  query_mode: text2cypher
+  hop_depth: shallow
+  temporal: null
+  category: happy_path
+  oracle_cypher: "CALL gds.graph.project('tmpEval003', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.betweenness.stream(graphName)\nYIELD nodeId,\
+    \ score\nWITH gds.util.asNode(nodeId) AS node, score\nWHERE node:Station\nRETURN node.name AS station_name,\
+    \ round(score, 2) AS betweenness_score\nORDER BY betweenness_score DESC\nLIMIT 10\n"
+  ground_truth: A correct answer must identify Metro Center and L'Enfant Plaza as the two biggest choke
+    points on the Washington DC metro network, with Metro Center having the highest betweenness score
+    of 1263.18 and L'Enfant Plaza the second highest at 943.93. The answer should explain that betweenness
+    scores measure how many shortest paths between station pairs pass through a given station, making
+    high-scoring stations critical to network connectivity. A correct answer may also mention Fort Totten
+    and Gallery Place as secondary chokepoints with notably lower but still significant scores of 350.28,
+    but must not suggest that stations with low betweenness scores (such as those scoring 27.7) are major
+    choke points.
+  notes: 'Betweenness centrality — tests the most transit-relevant GDS algorithm for WMATA. High betweenness
+    stations are critical single points of failure on the network. Question phrasing ("cut off") is natural
+    but implies betweenness, not PageRank. Tests Planner''s ability to distinguish betweenness from degree/PageRank
+    context. Metro Center and L''Enfant Plaza expected at top.
+
+    '
+- id: hani_gds_004
+  question: Which groups of stations naturally cluster together on the WMATA network?
+  domain: transfer_impact
+  anchors: []
+  anchor_complexity: single
+  query_mode: text2cypher
+  hop_depth: deep
+  temporal: null
+  category: happy_path
+  oracle_cypher: "CALL gds.graph.project('tmpEval004', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.louvain.stream(graphName)\nYIELD nodeId,\
+    \ communityId\nWITH communityId, collect(gds.util.asNode(nodeId)) AS nodes\nWITH communityId,\n  \
+    \   [n IN nodes WHERE n:Station | n.name] AS stations\nWHERE size(stations) > 0\nRETURN communityId,\
+    \ size(stations) AS station_count, stations\nORDER BY station_count DESC\n"
+  ground_truth: 'A correct answer must identify four natural clusters of WMATA stations discovered through
+    network analysis: Community 227 containing 36 stations (including Metro Center, Rosslyn, and extending
+    to Ashburn), Community 228 containing 24 stations (including Farragut North, Dupont Circle, and Shady
+    Grove), Community 226 containing 23 stations (including Gallery Place, L''Enfant Plaza, and Branch
+    Av), and Community 225 containing 15 stations (including Arlington Cemetery, Pentagon, and Franconia-Springfield).
+    The answer should recognize that these clusters represent natural groupings based on network topology
+    and connectivity patterns within the WMATA system, without making unsupported claims about the reasons
+    for clustering beyond the graph structure itself.'
+  notes: 'Community detection via Louvain. Tests that QueryWriter generates multi-YIELD GDS queries correctly
+    and that the narration agent describes cluster membership in plain language rather than raw community
+    IDs. Expected to reveal corridor-aligned clusters (Blue/Orange/Silver corridor, Red Line corridor,
+    Green/Yellow corridor).
+
+    '
+- id: hani_gds_005
+  question: Are there any stations on the WMATA network that are completely isolated — not reachable from
+    the main network?
+  domain: transfer_impact
+  anchors: []
+  anchor_complexity: single
+  query_mode: text2cypher
+  hop_depth: shallow
+  temporal: null
+  category: edge_case
+  oracle_cypher: "CALL gds.graph.project('tmpEval005', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.wcc.stream(graphName)\nYIELD nodeId, componentId\n\
+    WITH componentId, collect(gds.util.asNode(nodeId)) AS nodes\nWITH componentId,\n     [n IN nodes WHERE\
+    \ n:Station | n.name] AS stations\nWHERE size(stations) > 0\nRETURN componentId, size(stations) AS\
+    \ station_count, stations\nORDER BY station_count DESC\n"
+  ground_truth: A correct answer must state that there are no isolated stations on the WMATA network.
+    The query results show a single connected component containing all 98 stations in the system, meaning
+    every station is reachable from every other station through the network's rail connections. A correct
+    answer should not imply that any stations are disconnected or form separate network clusters.
+  notes: 'WCC edge case — tests whether isolated stations exist in the Route-Station graph. All 98 WMATA
+    stations are served by at least one rail route, so the main component should include all stations
+    and the answer should state the network is fully connected. Tests narration agent handling of graph
+    structural results.
+
+    '
+- id: hani_gds_006
+  question: Which stations can I reach from L'Enfant Plaza within 2 transfers?
+  domain: transfer_impact
+  anchors:
+  - L'Enfant Plaza
+  anchor_complexity: single
+  query_mode: text2cypher
+  hop_depth: deep
+  temporal: null
+  category: happy_path
+  oracle_cypher: "CALL gds.graph.project('tmpEval006', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nMATCH (source:Station {id: 'STN_D03_F03'})\nCALL\
+    \ gds.bfs.stream(graphName, {sourceNode: source, maxDepth: 2})\nYIELD path\nUNWIND nodes(path) AS\
+    \ n\nWITH DISTINCT n\nWHERE n:Station AND n.id <> 'STN_D03_F03'\nRETURN n.name AS reachable_station,\
+    \ n.id AS station_id\nORDER BY reachable_station\n"
+  ground_truth: A correct answer must identify that there are at least 20 stations reachable from L'Enfant
+    Plaza within 2 transfers, including specific stations such as Addison Rd, Anacostia, Archives, Arlington
+    Cemetery, Ashburn, Ballston-MU, Benning Rd, Braddock Rd, Branch Av, Capitol Heights, Capitol South,
+    Cheverly, Clarendon, College Park-U of Md, Columbia Heights, Congress Heights, Court House, Crystal
+    City, Deanwood, and Downtown Largo. The answer should accurately represent that these stations can
+    be reached with a maximum of two transfers from L'Enfant Plaza and must not claim that additional
+    stations beyond those verified in the oracle data are reachable within this constraint.
+  notes: 'BFS reachability from L''Enfant Plaza (STN_D03_F03 — major interchange: Blue/Orange/Silver/Yellow/Green).
+    Tests anchor injection into a GDS sourceNode parameter. maxDepth:2 in the bipartite graph means: Station
+    -> Route -> Station, reaching all stations on any line that serves L''Enfant Plaza. L''Enfant Plaza
+    serves 5 lines so the reachable set is large (73+ stations). Uses anchor ID literal rather than CONTAINS
+    to avoid scoping issues after UNWIND.
+
+    '
+- id: hani_gds_007
+  question: Which stations have the most direct connections to other stations?
+  domain: transfer_impact
+  anchors: []
+  anchor_complexity: single
+  query_mode: text2cypher
+  hop_depth: shallow
+  temporal: null
+  category: happy_path
+  oracle_cypher: "CALL gds.graph.project('tmpEval007', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.degree.stream(graphName)\nYIELD nodeId,\
+    \ score\nWITH gds.util.asNode(nodeId) AS node, score\nWHERE node:Station\nRETURN node.name AS station_name,\
+    \ toInteger(score) AS route_count\nORDER BY route_count DESC\nLIMIT 10\n"
+  ground_truth: A correct answer must identify L'Enfant Plaza as the station with the most direct connections,
+    having 5 routes, and should note that Metro Center is the second-most connected with 4 routes. The
+    answer should either list or acknowledge the group of stations tied with 3 routes each (Smithsonian,
+    Farragut West, Rosslyn, Federal Triangle, Gallery Place, Fort Totten, McPherson Sq, and Foggy Bottom-GWU),
+    or at minimum indicate that multiple stations share the third-highest connection count. The answer
+    must not misrepresent the connection counts or incorrectly rank the stations.
+  notes: 'Degree centrality — simpler than PageRank, tests Planner routing to degree algorithm vs PageRank
+    for a "most connections" phrasing. In the Route-Station bipartite graph, degree of a Station is the
+    number of rail routes that serve it. Expected to differ from PageRank ranking. Validates that the
+    pipeline does not conflate degree with PageRank when the question uses "direct connections".
+
+    '
+- id: hani_gds_008
+  question: How structurally central is Metro Center compared to other stations on the network?
+  domain: transfer_impact
+  anchors:
+  - Metro Center
+  anchor_complexity: single
+  query_mode: text2cypher
+  hop_depth: shallow
+  temporal: null
+  category: edge_case
+  oracle_cypher: "CALL gds.graph.project('tmpEval008', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.betweenness.stream(graphName)\nYIELD nodeId,\
+    \ score\nWITH gds.util.asNode(nodeId) AS node, score\nWHERE node:Station\nWITH node, score ORDER BY\
+    \ score DESC\nWITH collect({name: node.name, score: score}) AS ranked\nUNWIND range(0, size(ranked)-1)\
+    \ AS idx\nWITH ranked[idx] AS entry, idx+1 AS position, size(ranked) AS total\nWHERE entry.name =\
+    \ 'Metro Center'\nRETURN entry.name AS station_name, round(entry.score, 2) AS betweenness_score,\n\
+    \       position AS rank_position, total AS total_stations\n"
+  ground_truth: A correct answer must state that Metro Center is the most structurally central station
+    on the network, ranking first out of 98 total stations with a betweenness centrality score of 1263.18.
+    The answer should convey that this high betweenness score indicates Metro Center lies on more shortest
+    paths between other station pairs than any other station on the network. The answer must not speculate
+    about reasons for this centrality or make claims about passenger volume, ridership, or other factors
+    not directly related to network topology.
+  notes: 'Anchor-specific centrality query — tests that the pipeline can answer a comparison question
+    about a specific station''s graph rank. Requires the LLM to generate a ranking subquery that filters
+    down to the anchored station. Oracle returns Metro Center''s betweenness rank and total station count
+    for context. Metro Center is ranked #1 with betweenness score 1263.18 out of 98 stations.
+
+    '
+- id: hani_gds_009
+  question: What is the fastest way to get from Shady Grove to Branch Ave?
+  domain: transfer_impact
+  anchors:
+  - Shady Grove
+  - Branch Ave
+  anchor_complexity: multi
+  query_mode: text2cypher
+  hop_depth: deep
+  temporal: null
+  category: happy_path
+  oracle_cypher: "CALL gds.graph.project('tmpEval009', ['Station', 'Route'],\n  {SERVES: {type: 'SERVES',\
+    \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nMATCH (source:Station {id: 'STN_A15'}), (target:Station\
+    \ {id: 'STN_F11'})\nCALL gds.shortestPath.dijkstra.stream(graphName, {sourceNode: source, targetNode:\
+    \ target})\nYIELD nodeIds, totalCost\nRETURN\n    source.name AS origin,\n    target.name AS destination,\n\
+    \    [nodeId IN nodeIds | gds.util.asNode(nodeId).name] AS path_nodes,\n    toInteger(totalCost) AS\
+    \ hop_count\nORDER BY hop_count ASC\nLIMIT 1\n"
+  ground_truth: A correct answer must identify that the fastest route from Shady Grove to Branch Ave requires
+    4 hops and passes through Fort Totten as an intermediate station. The answer should note that this
+    represents the shortest path between these two stations on the transit network. The oracle data contains
+    null values for some intermediate nodes, indicating incomplete station name information in those positions,
+    which a correct answer need not resolve or speculate about.
+  notes: 'End-to-end path query with two distant terminus stations. Shady Grove (STN_A15, Red Line end)
+    to Branch Av (STN_F11, Green Line end) requires at least two route hops (transfer at Fort Totten in
+    the bipartite graph). Tests multi-anchor resolution for stations at opposite ends of the network and
+    Dijkstra path stitching. "Fastest way" phrasing should route to GDS not a plain Cypher hop-count query.
+
+    '
+- id: hani_gds_010
+  question: How many accessible elevator routes connect street level to the platform at Metro Center,
+    and are any of those elevators currently out of service?
+  domain: accessibility
+  anchors:
+  - Metro Center
+  anchor_complexity: single
+  query_mode: both
+  hop_depth: deep
+  temporal: implicit
+  category: edge_case
+  oracle_cypher: "MATCH (s:Station)-[:CONTAINS]->(e:Pathway:Elevator)\nWHERE s.name CONTAINS 'Metro Center'\n\
+    OPTIONAL MATCH (o:OutageEvent)-[:AFFECTS]->(e)\nRETURN\n    s.name                   AS station,\n\
+    \    count(DISTINCT e)        AS total_elevators,\n    count(DISTINCT o)        AS active_outages,\n\
+    \    collect(DISTINCT e.id)   AS elevator_ids\n"
+  ground_truth: A correct answer must state that there are 3 accessible elevator routes connecting street
+    level to the platform at Metro Center station, and must clearly indicate that none of these elevators
+    are currently out of service. The answer should convey that all three elevators (identified as A01_C01_104115,
+    A01_C01_104126, and A01_C01_104146) are operational.
+  notes: 'Cross-domain edge case combining accessibility data with a count query. Does NOT use GDS — tests
+    that the Planner correctly routes to standard Cypher (accessibility domain) rather than GDS for an
+    elevator count question. This question is in hani_gds.yaml as a negative control: a question about
+    physical paths at a station that does NOT warrant graph algorithm reasoning. The pipeline should NOT
+    set use_gds=true here.
+
+    '

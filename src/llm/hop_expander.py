@@ -122,6 +122,7 @@ class HopExpander:
         )
 
         # ── Phase 2: hop expansion ────────────────────────────────────────────
+        _TOTAL_NODE_BUDGET = 5_000  # hard cap across all hops
         frontier: set[str] = set(nodes.keys())  # element IDs to expand from
 
         for hop in range(1, config.max_hops + 1):
@@ -190,6 +191,17 @@ class HopExpander:
                 len(nodes),
                 domain,
             )
+
+            # Stop early if aggregate node budget exceeded
+            if len(nodes) >= _TOTAL_NODE_BUDGET:
+                log.warning(
+                    "hop_expander | total node budget (%d) hit at hop %d "
+                    "— truncating expansion | domain=%s",
+                    _TOTAL_NODE_BUDGET,
+                    hop,
+                    domain,
+                )
+                break
 
             # Stop early if frontier is exhausted before max_hops
             if not new_frontier:

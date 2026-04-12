@@ -39,10 +39,12 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
     "accessibility": DomainExpansionConfig(
         max_hops=3,
         expand_rels=[
-            "BELONGS_TO",
-            "CONNECTED_BY",
+            "CONTAINS",
             "AFFECTS",
             "AFFECTS_STOP",
+            "ON_LEVEL",
+            "STARTING_LEVEL",
+            "ENDING_LEVEL",
         ],
         include_labels=[
             "Station",
@@ -50,6 +52,7 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
             "OutageEvent",
             "Interruption",
             "Date",
+            "Level",
         ],
         provenance_rels=[
             "SOURCED_FROM",
@@ -58,10 +61,13 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
     "delay_propagation": DomainExpansionConfig(
         max_hops=3,
         expand_rels=[
+            # SOURCED_FROM removed from expand_rels — it is already in
+            # provenance_rels, so including it here caused TripUpdate /
+            # StopTimeUpdate nodes to be pulled in twice (once via hop
+            # expansion, once via provenance pass), exploding the subgraph.
             "AFFECTS_STOP",
             "AFFECTS_TRIP",
             "AFFECTS_ROUTE",
-            "SOURCED_FROM",
             "HAS_STOP_UPDATE",
             "AT_STOP",
         ],
@@ -79,5 +85,6 @@ EXPANSION_CONFIG: dict[str, DomainExpansionConfig] = {
             "SOURCED_FROM",
             "HAS_STOP_UPDATE",
         ],
+        max_results_per_hop=100,  # reduced from 500 — delay graphs are dense
     ),
 }

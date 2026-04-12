@@ -59,6 +59,12 @@ PATHWAY_PREFIX_TO_LABEL: dict[str, str] = {
 
 _YYYYMMDD_RE = re.compile(r"^\d{8}$")
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_LUCENE_ESCAPE_RE = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
+
+
+def _escape_lucene(name: str) -> str:
+    """Escape special characters for Neo4j full-text (Lucene) queries."""
+    return _LUCENE_ESCAPE_RE.sub(r"\\\1", name)
 
 
 # ── Candidate — intermediate type produced by generation, consumed by strategy
@@ -173,6 +179,8 @@ class AnchorResolutions:
     # expr → [YYYYMMDD, ...]  dates are deterministic so always length 1
     resolved_pathway_nodes: dict[str, list[str]] = field(default_factory=dict)
     # name → [id, ...]
+    resolved_levels: dict[str, list[str]] = field(default_factory=dict)
+    # name/description → [level_id, ...]
     failed: dict[str, str] = field(default_factory=dict)
     # anchor → reason — mentions that produced zero candidates or were declined
 
@@ -184,6 +192,7 @@ class AnchorResolutions:
                 self.resolved_routes,
                 self.resolved_dates,
                 self.resolved_pathway_nodes,
+                self.resolved_levels,
             ]
         )
 
@@ -199,6 +208,7 @@ class AnchorResolutions:
             **self.resolved_routes,
             **self.resolved_dates,
             **self.resolved_pathway_nodes,
+            **self.resolved_levels,
         }
 
 
@@ -297,6 +307,14 @@ class AnchorResolver:
             else:
                 result.failed[name] = f"No Pathway node matched '{name}'"
 
+        for name in anchors.levels:
+            cands = self._fetch_level_candidates(name)
+            if cands:
+                all_candidates[name] = cands
+                mention_to_type[name] = "level"
+            else:
+                result.failed[name] = f"No Level matched '{name}'"
+
         if not all_candidates:
             log.warning(
                 "anchor_resolver | zero candidates generated | anchors=%s", anchors
@@ -357,6 +375,14 @@ class AnchorResolver:
                     node_ids,
                     " (tied)" if tied else "",
                 )
+            elif anchor_type == "level":
+                result.resolved_levels[mention] = node_ids
+                log.info(
+                    "anchor_resolver | level resolved | '%s' → %s%s",
+                    mention,
+                    node_ids,
+                    " (tied)" if tied else "",
+                )
 
         # Record mentions the strategy declined to resolve
         for mention in all_candidates:
@@ -379,7 +405,7 @@ class AnchorResolver:
         ranked by string match score, then by degree on SERVES/SCHEDULED_AT
         as a tiebreaker within equal scores.
         """
-        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+        clean_name = _escape_lucene(name)
 
         rows = self.db.query(
             """
@@ -392,7 +418,7 @@ class AnchorResolver:
             ORDER BY score DESC, degree DESC
             LIMIT $k
             """,
-            {"query": f"*{clean_name}*", "k": self._k},
+            {"query": f"{clean_name}*", "k": self._k},
         )
 
         if not rows:
@@ -416,7 +442,7 @@ class AnchorResolver:
         Full-text index lookup for routes. Returns up to self._k candidates.
         Single-pass: handles short name exact match and long name substring.
         """
-        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+        clean_name = _escape_lucene(name)
         lucene_query = (
             f'route_short_name:"{clean_name}" OR route_long_name:*{clean_name}*'
         )
@@ -588,17 +614,17 @@ class AnchorResolver:
             )
             return []
 
-        clean_name = re.sub(r'([+\-&|!(){}\[\]^"~*?:\\/])', r"\\\1", name)
+        clean_name = _escape_lucene(name)
         rows = self.db.query(
             """
             CALL db.index.fulltext.queryNodes("physical_pathway_name", $name_query) YIELD node AS p, score
-            MATCH (p)-[:BELONGS_TO]->(s:Station)
+            MATCH (s:Station)-[:CONTAINS]->(p)
             WHERE s.id STARTS WITH $station_code
             RETURN p.id AS id, elementId(p) AS element_id
             ORDER BY score DESC
             LIMIT $k
             """,
-            {"name_query": f"*{clean_name}*", "station_code": station_code, "k": self._k},
+            {"name_query": f"{clean_name}*", "station_code": station_code, "k": self._k},
         )
 
         if not rows:
@@ -616,6 +642,49 @@ class AnchorResolver:
                 score=1.0,
                 element_id=row["element_id"],
                 anchor_type="pathway_node",
+            )
+            for row in rows
+        ]
+
+    # ── Level candidate generation ────────────────────────────────────────────
+
+    def _fetch_level_candidates(self, name: str) -> list[Candidate]:
+        """
+        Full-text index lookup for Level nodes by level_name.
+
+        level_name carries human-readable floor descriptions from levels.txt
+        (e.g. 'Street Level', 'Mezzanine', 'Platform Level'). The full-text
+        index physical_level_name is used for fuzzy matching.
+
+        level_id is used as node_id because it is the primary key on Level
+        nodes and the field used in ON_LEVEL / STARTING_LEVEL / ENDING_LEVEL
+        relationship Cypher. The hop expander uses node_id as the Neo4j lookup
+        key — level_id is correct here.
+        """
+        clean_name = _escape_lucene(name)
+        rows = self.db.query(
+            """
+            CALL db.index.fulltext.queryNodes("physical_level_name", $query) YIELD node, score
+            RETURN node.level_id   AS level_id,
+                   node.level_name AS level_name,
+                   score,
+                   elementId(node) AS element_id
+            ORDER BY score DESC
+            LIMIT $k
+            """,
+            {"query": f"*{clean_name}*", "k": self._k},
+        )
+
+        if not rows:
+            log.warning("anchor_resolver | level not found | name=%s", name)
+
+        return [
+            Candidate(
+                node_id=row["level_id"],
+                display_name=row["level_name"],
+                score=row["score"],
+                element_id=row["element_id"],
+                anchor_type="level",
             )
             for row in rows
         ]

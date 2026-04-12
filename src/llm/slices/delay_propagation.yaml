@@ -5,29 +5,21 @@
 # Core question: where did a delay originate, how far has it spread across
 # trips and stops, and what does the raw provenance show?
 #
-# This is the broadest-scope domain — it traverses the most node types and
-# has the highest tiebreak weight (3) in the Planner classifier.
-#
 # Two traversal paths:
-#   Analytical: Interruption:Delay → AFFECTS_STOP → Platform → SCHEDULED_AT
-#               ← Trip (finds all trips affected at delayed stops)
+#   Analytical: Interruption:Delay → AFFECTS_ROUTE/AFFECTS_TRIP → Route/Trip
 #   Provenance: Interruption:Delay → SOURCED_FROM → TripUpdate →
 #               HAS_STOP_UPDATE → StopTimeUpdate → AT_STOP → Platform
-#               (raw RT data for LLM explainability — Tier 1 nodes)
 #
 # Park (2023) alignment: delay propagation is the primary use case for
-# multi-hop graph traversal in transport network analysis. The Tier 1
-# provenance path (SOURCED_FROM) implements the LLM explainability design
-# recorded in service_interruption_schema_v3 Section 7.
+# multi-hop graph traversal in transport network analysis.
 
 domain: delay_propagation
 
-# ── Node label whitelist ──────────────────────────────────────────────────────
+# ── Required node labels ──────────────────────────────────────────────────────
+# Static structural nodes — always present after base pipeline layers load.
 nodes:
-  - ":Interruption:Delay"
-  - ":TripUpdate"
-  - ":StopTimeUpdate"
   - ":Trip"
+  - ":RoutePattern"
   - ":Route"
   - ":Route:Rail"
   - ":Route:Bus"
@@ -36,12 +28,22 @@ nodes:
   - ":Station"
   - ":Date"
 
+# ── Optional node labels ──────────────────────────────────────────────────────
+# RT-derived overlay nodes — absent on a fresh DB until the interruption layer
+# runs. All relationships touching these nodes are auto-derived as optional.
+nodes_optional:
+  - ":Interruption:Delay"
+  - ":TripUpdate"
+  - ":StopTimeUpdate"
+
 # ── Relationship triples ──────────────────────────────────────────────────────
+# Static-to-static relationships always present after base layers load.
+# Relationships touching optional nodes are auto-derived as optional.
 relationships:
-  - { from: "Interruption",    type: "AFFECTS_STOP",    to: "Platform"      }
-  - { from: "Interruption",    type: "AFFECTS_STOP",    to: "BusStop"       }
   - { from: "Interruption",    type: "AFFECTS_ROUTE",   to: "Route"         }
   - { from: "Interruption",    type: "AFFECTS_TRIP",    to: "Trip"          }
+  - { from: "Interruption",    type: "AFFECTS_STOP",    to: "Platform"      }
+  - { from: "Interruption",    type: "AFFECTS_STOP",    to: "BusStop"       }
   - { from: "Interruption",    type: "ON_DATE",         to: "Date"          }
   - { from: "Interruption",    type: "SOURCED_FROM",    to: "TripUpdate"    }
   - { from: "TripUpdate",      type: "UPDATES",         to: "Trip"          }
@@ -53,17 +55,28 @@ relationships:
   - { from: "Trip",            type: "SCHEDULED_AT",    to: "BusStop"       }
   - { from: "Trip",            type: "FOLLOWS",         to: "RoutePattern"  }
   - { from: "RoutePattern",    type: "BELONGS_TO",      to: "Route"         }
+  - { from: "Station",         type: "CONTAINS",        to: "Platform"      }
 
 # ── Traversal patterns ────────────────────────────────────────────────────────
 patterns:
-  - "(:Interruption:Delay)-[:AFFECTS_STOP]->(:Platform)<-[:SCHEDULED_AT]-(:Trip)"
+  - "(:Interruption:Delay)-[:AFFECTS_ROUTE]->(:Route)"
+  - "(:Interruption:Delay)-[:AFFECTS_TRIP]->(:Trip)-[:FOLLOWS]->(:RoutePattern)-[:BELONGS_TO]->(:Route)"
   - "(:Interruption:Delay)-[:SOURCED_FROM]->(:TripUpdate)-[:HAS_STOP_UPDATE]->(:StopTimeUpdate)-[:AT_STOP]->(:Platform)"
+
+# ── Optional properties ───────────────────────────────────────────────────────
+# Properties valid in the schema but sparse in the live graph — present only
+# on a subset of nodes. Neo4j introspection misses them when no current node
+# has the property set. Merged into the validator whitelist at startup.
+properties_optional:
+  Interruption:
+    - end_time    # null while active; set when the interruption resolves
 
 # ── WMATA-specific warnings ───────────────────────────────────────────────────
 warnings:
   - "Delay threshold is 300 seconds (5 minutes) — TripUpdates below this threshold produce no :Interruption node"
-  - "end_time is nullable on :Interruption — add IS NOT NULL filter when querying resolved delays only"
+  - "end_time is nullable on :Interruption — null means the delay is still active; set only when the interruption resolves. Always add IS NOT NULL when filtering for resolved delays"
   - "On-time stops within disrupted trips are omitted from StopTimeUpdate — absence of a StopTimeUpdate does NOT mean on-time"
   - "severity on :Interruption:Delay: WARNING=300-899s, SEVERE=900s+ (15 minutes)"
   - "Use :Delay label directly — do not filter WHERE interruption_type='delay'"
   - "TripUpdate.source distinguishes rail (gtfs_rt_rail) from bus (gtfs_rt_bus) — filter by source when mode matters"
+  - "AFFECTS_STOP has no data in the current live graph — use AFFECTS_ROUTE or AFFECTS_TRIP instead"

@@ -3,12 +3,11 @@
 JourneyGraph LLM Query Pipeline — run script.
 
 Entry point for natural language querying over the WMATA knowledge graph.
-Runs the Planner stage, shared anchor resolution, and where the path warrants
-it, the Subgraph path (HopExpander → ContextSerializer). Anchor resolution
-runs once after the Planner for all non-rejected queries — resolved IDs are
-shared across both the Subgraph and Text2Cypher paths. Downstream pipeline
-stages (Query Writer, Cypher Validator, Narration Agent) are not yet
-implemented.
+Runs the full pipeline: Planner → Anchor Resolution → Clarification →
+Query Writer + Cypher Validator (text2cypher/both paths) → Subgraph path →
+Narration Agent. Anchor resolution runs once after the Planner for all
+non-rejected queries — resolved IDs are shared across both the Subgraph and
+Text2Cypher paths.
 
 Usage:
     # Single query (default)
@@ -22,7 +21,6 @@ Usage:
 
     # Interactive REPL
     python -m src.llm.run --repl
-    python -m src.llm.run --repl
 
     # Hard-fail on any schema validation warning
     python -m src.llm.run "..." --strict
@@ -32,8 +30,10 @@ Startup sequence (same for all modes):
     2. Neo4jManager()     — hard fail if DB unreachable; connection held
                            open for subgraph queries during session
     3. SliceRegistry()    — validates slices against live graph
-    4. Planner()          — builds LLM instance
-    5. Enter selected mode
+    4. Planner()          — builds LLM instance (Stage 2)
+    5. NarrationAgent()   — builds LLM instance (narration)
+    6. AnchorClarifier()  — fetches station/route catalogue from graph once
+    7. Enter selected mode
 
 The SliceRegistry validation (DB-touching) always completes before any
 LLM call is made, so a misconfigured database never wastes API tokens.
@@ -48,18 +48,25 @@ import logging
 import sys
 from typing import TYPE_CHECKING
 
-from src.common.config import get_llm_config
+from neo4j.exceptions import Neo4jError
+
+from src.common.config import LLMConfig, get_llm_config
 from src.common.logger import get_logger
 from src.common.neo4j_tools import Neo4jManager
+from src.llm.agent import AgentOrchestrator
+from src.llm.anchor_clarifier import AnchorClarifier
 from src.llm.anchor_resolver import AnchorResolver
 from src.llm.disambiguation_strategies import TypeWeightedCoherenceStrategy
+from src.llm.narration_agent import NarrationAgent
 from src.llm.planner import Planner
 from src.llm.slice_registry import SliceRegistry
 from src.llm.subgraph_builder import SubgraphBuilder
 from src.llm.cypher_validator import validate_and_log_cypher
 from src.llm.query_writer import run_query_writer
+from src.llm.text2cypher_output import Text2CypherOutput
 
 if TYPE_CHECKING:
+    from src.llm.narration_output import NarrationOutput
     from src.llm.planner_output import PlannerOutput
     from src.llm.subgraph_output import SubgraphOutput
 
@@ -155,6 +162,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
 
+    parser.add_argument(
+        "--mode",
+        choices=["static", "agentic"],
+        default="static",
+        help=(
+            "Pipeline execution mode. 'static' (default) runs the fixed "
+            "Planner → QueryWriter/Subgraph → Narration chain. "
+            "'agentic' replaces the retrieval step with a Claude agent loop "
+            "that selects tools dynamically (max 5 iterations). "
+            "Both modes share the Planner + AnchorResolver pre-step and the "
+            "NarrationAgent terminal step. Use --demo or --repl with either mode."
+        ),
+    )
+
     return parser.parse_args(argv)
 
 
@@ -183,21 +204,8 @@ def _fmt_planner_compact(output: PlannerOutput) -> str:
     return f"domain={output.domain}  path={output.path}\nanchors: {anchor_str}"
 
 
-def _fmt_planner_verbose(
-    output: PlannerOutput,
-    stage1_scores: dict[str, float] | None = None,
-) -> str:
+def _fmt_planner_verbose(output: PlannerOutput) -> str:
     lines: list[str] = []
-
-    if stage1_scores is not None:
-        lines.append("─── Stage 1 — domain classifier ────────────────────────")
-        for domain, score in sorted(stage1_scores.items()):
-            marker = (
-                "  ← selected"
-                if (not output.rejected and domain == output.domain)
-                else ""
-            )
-            lines.append(f"  {domain:<22} {score:.4f}{marker}")
 
     lines.append("─── PlannerOutput ───────────────────────────────────────")
     lines.append(f"  domain           : {output.domain!r}")
@@ -219,6 +227,58 @@ def _fmt_planner_verbose(
     lines.append(f"    dates          : {output.anchors.dates}")
     lines.append(f"    pathway_nodes  : {output.anchors.pathway_nodes}")
 
+    return "\n".join(lines)
+
+
+# ── Output formatting — Narration ────────────────────────────────────────────
+
+
+def _fmt_narration(output: NarrationOutput) -> str:
+    lines: list[str] = []
+    lines.append("─── NarrationOutput ─────────────────────────────────────")
+    lines.append(f"  mode         : {output.mode!r}")
+    lines.append(f"  domain       : {output.domain!r}")
+    lines.append(f"  sources_used : {output.sources_used}")
+    lines.append(f"  success      : {output.success}")
+    if output.failure_reason:
+        lines.append(f"  ⚠ failure    : {output.failure_reason}")
+    lines.append("─── Pipeline Trace ──────────────────────────────────────")
+    trace = output.trace
+    planner_t = trace.get("planner", {})
+    lines.append(
+        f"  planner      : domain={planner_t.get('domain')!r}"
+        f"  path={planner_t.get('path')!r}"
+    )
+    lines.append(f"    path_reasoning : {planner_t.get('path_reasoning')!r}")
+    lines.append(f"    anchor_notes   : {planner_t.get('anchor_notes')!r}")
+    if planner_t.get("parse_warning"):
+        lines.append(f"    ⚠ parse_warning: {planner_t.get('parse_warning')}")
+    t2c_t = trace.get("text2cypher")
+    if t2c_t:
+        lines.append(
+            f"  text2cypher  : success={t2c_t.get('success')}"
+            f"  attempts={t2c_t.get('attempt_count')}"
+        )
+        if t2c_t.get("validation_notes"):
+            for note in t2c_t["validation_notes"]:
+                lines.append(f"    validator  : {note}")
+    else:
+        lines.append("  text2cypher  : not run")
+    sub_t = trace.get("subgraph")
+    if sub_t:
+        lines.append(
+            f"  subgraph     : success={sub_t.get('success')}"
+            f"  nodes={sub_t.get('node_count')}"
+            f"  trimmed={sub_t.get('trimmed')}"
+        )
+        lines.append(f"    anchors    : {sub_t.get('anchor_resolutions')}")
+    else:
+        lines.append("  subgraph     : not run")
+    lines.append("─── Answer ──────────────────────────────────────────────")
+    if output.answer:
+        lines.append(output.answer)
+    else:
+        lines.append("  (no answer — LLM call failed)")
     return "\n".join(lines)
 
 
@@ -259,52 +319,62 @@ def _fmt_subgraph_verbose(sub: SubgraphOutput) -> str:
 
 def _run_query(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
     query: str,
-    registry: SchemaRegistry,
     *,
+    registry: SliceRegistry,
+    clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int = 1,
     strategy: str = "topk",
     label: str | None = None,
-) -> tuple[PlannerOutput, SubgraphOutput | None]:
+) -> tuple[PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None]:
     """
-    Execute a single query through the Planner and, where the path
-    warrants it, the Subgraph path.
+    Execute a single query through the full pipeline.
+
+    Stages: Planner → Anchor Resolution → Clarification (if needed) →
+    Query Writer + Cypher Validator (text2cypher/both paths) →
+    Subgraph path → Narration Agent.
 
     invocation_time is captured once here so relative date expressions
     (yesterday, last Tuesday) resolve consistently within the same
     pipeline invocation.
 
     Args:
-        planner:         Initialised Planner instance.
-        db:              Live Neo4jManager — held open across queries.
-        query:           Raw query string.
-        candidate_limit: Max candidates per mention from full-text index.
-                         1 = baseline, no disambiguation.
-        strategy:        'topk' or 'coherence'. Ignored when
-                         candidate_limit=1.
-        label:           Optional prefix for --demo mode e.g. '[1/4]'.
+        planner:          Initialised Planner instance.
+        narration_agent:  Initialised NarrationAgent instance.
+        db:               Live Neo4jManager — held open across queries.
+        query:            Raw query string.
+        registry:         SliceRegistry — used by Query Writer path for
+                          property whitelist validation.
+        llm_config:       LLMConfig — passed to QueryWriter for model/key.
+        clarifier:        AnchorClarifier — fires only when station/route
+                          anchors fail Lucene lookup.
+        candidate_limit:  Max candidates per mention from full-text index.
+                          1 = baseline, no disambiguation.
+        strategy:         'topk' or 'coherence'. Ignored when
+                          candidate_limit=1.
+        label:            Optional prefix for --demo mode e.g. '[1/4]'.
 
     Returns:
-        (PlannerOutput, SubgraphOutput | None)
-        SubgraphOutput is None when the query is rejected, zero anchors
-        resolve, or path is text2cypher only.
+        (PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None)
+        Text2CypherOutput is None when the planner routes to subgraph-only path.
+        NarrationOutput is None only when the query is rejected or a
+        Neo4j error occurs during anchor resolution.
     """
     invocation_time = datetime.now(UTC)
     prefix = f"{label}  " if label else ""
-
-    stage1_result = planner.classify_only(query)
-    stage1_scores = stage1_result.scores
 
     planner_output = planner.run(query)
 
     # ── Planner output ────────────────────────────────────────────────────────
     header = f"\n{'═' * 56}\n{prefix}Query: {query!r}\n{'═' * 56}"
     print(header)
-    print(_fmt_planner_verbose(planner_output, stage1_scores=stage1_scores))
+    print(_fmt_planner_verbose(planner_output))
 
     if planner_output.rejected:
-        return planner_output, None
+        return planner_output, None, None, None
 
     # ── Anchor resolution — shared pre-fork step ──────────────────────────────
     # Runs for every non-rejected query regardless of path. Both Text2Cypher
@@ -319,124 +389,374 @@ def _run_query(
         strategy=disambiguation_strategy,
         candidate_limit=candidate_limit,
     )
-    resolutions = resolver.resolve(planner_output.anchors)
-
-    if not resolutions.any_resolved:
-        log.warning("run | zero anchors resolved | query=%r", query)
-        print(
-            "\nNo entities could be resolved from your query. "
-            "Please restate it with a specific station, route, or date "
-            "(e.g. 'Metro Center', 'Red Line', 'yesterday')."
+    try:
+        resolutions = resolver.resolve(planner_output.anchors)
+    except Neo4jError as exc:
+        log.error(
+            "run | anchor resolution failed | %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
         )
-        return planner_output, None
+        print(f"\nDatabase error during anchor resolution: {exc}")
+        return planner_output, None, None, None
 
-    log.info(
-        "run | anchors resolved | config=%s | %s",
-        resolver.config,
-        resolutions.as_flat_dict(),
-    )
-    
-    # ── Query Writer path ─────────────────────────────────────────────────────────
-    if getattr(planner_output, "path", None) in {"text2cypher", "both"}:
-        query_writer_output = run_query_writer(query, planner_output)
-        print("\n[Query Writer Output]")
-        print("Cypher Query:\n", query_writer_output.cypher_query)
-        print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
+    # ── Anchor clarification — fires only on station/route failures ──────────────
+    # Silent repair pass: maps failed mentions to valid WMATA names via a small
+    # LLM call, then re-resolves. Skipped when no station/route failures exist.
+    if resolutions.failed:
+        resolutions = clarifier.clarify(resolutions, resolver)
 
-        # Validate Cypher
+    if resolutions.any_resolved:
+        log.info(
+            "run | anchors resolved | config=%s | %s",
+            resolver.config,
+            resolutions.as_flat_dict(),
+        )
+    else:
+        log.warning(
+            "run | zero anchors resolved — proceeding to degraded narration | query=%r",
+            query,
+        )
+
+    # ── Query Writer path — up to 3 attempts ─────────────────────────────────
+    # Attempt 1: plain generation. Attempts 2–3: validator errors fed back as
+    # targeted correction hints. Stops as soon as validation passes.
+    t2c_output: Text2CypherOutput | None = None
+
+    if planner_output.path in {"text2cypher", "both"}:
         schema_slice = registry.get(planner_output.schema_slice_key)
-        property_registry = schema_slice.property_registry
-        cypher_validator_result = validate_and_log_cypher(query_writer_output.cypher_query, schema_slice, schema_slice.property_registry, db.driver, log)
-        if cypher_validator_result.errors:
-            # print("Cypher Validator Errors:", cypher_validator_result.errors)
-            print("Cypher Validator Errors - see logs for details.")
+        _MAX_ATTEMPTS = 3
+        refinement_errors: list[str] = []
+        all_validation_notes: list[str] = []
+
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            query_writer_output = run_query_writer(
+                query,
+                planner_output,
+                llm_config,
+                schema_slice=schema_slice,
+                resolved_anchors=resolutions.as_flat_dict(),
+                refinement_errors=refinement_errors or None,
+                use_gds=planner_output.use_gds,
+            )
+            print(f"\n[Query Writer — attempt {attempt}/{_MAX_ATTEMPTS}]")
+            print("Cypher Query:\n", query_writer_output.cypher_query)
+            if attempt == 1:
+                print("Chain-of-Thought Comments:\n", query_writer_output.cot_comments)
+
+            val_result = validate_and_log_cypher(
+                query_writer_output.cypher_query,
+                schema_slice,
+                schema_slice.property_registry,
+                db.driver,
+                log,
+            )
+
+            if val_result.valid:
+                print(f"Cypher Validator: valid (attempt {attempt}).")
+                t2c_output = Text2CypherOutput(
+                    cypher=query_writer_output.cypher_query,
+                    results=val_result.results or [],
+                    domain=planner_output.domain,
+                    attempt_count=attempt,
+                    validation_notes=all_validation_notes,
+                    success=True,
+                )
+                break
+
+            # Validation failed — collect errors and prepare for next attempt
+            log.warning(
+                "run | cypher validation failed | attempt=%d/%d | errors=%s",
+                attempt,
+                _MAX_ATTEMPTS,
+                val_result.errors,
+            )
+            all_validation_notes.extend(val_result.errors)
+            refinement_errors = val_result.errors
+
         else:
-            print("Cypher Validator: Query is valid.")
+            # All attempts exhausted without a valid query
+            print(f"Cypher Validator: all {_MAX_ATTEMPTS} attempts failed.")
+            t2c_output = Text2CypherOutput(
+                cypher="",
+                results=[],
+                domain=planner_output.domain,
+                attempt_count=_MAX_ATTEMPTS,
+                validation_notes=all_validation_notes,
+                success=False,
+            )
 
     # ── Subgraph path ─────────────────────────────────────────────────────────
-    # sub_output: SubgraphOutput | None = None
+    sub_output: SubgraphOutput | None = None
 
-    # if planner_output.path in {"subgraph", "both"}:
-    #     builder = SubgraphBuilder(db=db)
-    #     sub_output = builder.run(
-    #         planner_output,
-    #         resolutions,
-    #         resolver_config=resolver.config,
-    #     )
-    #     print(_fmt_subgraph_verbose(sub_output))
+    if planner_output.path in {"subgraph", "both"}:
+        builder = SubgraphBuilder(db=db)
+        try:
+            sub_output = builder.run(
+                planner_output,
+                resolutions,
+                resolver_config=resolver.config,
+            )
+        except Neo4jError as exc:
+            log.error(
+                "run | subgraph expansion failed | %s: %s",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+            print(f"\nDatabase error during subgraph expansion: {exc}")
+            # Continue to narration with sub_output=None — degraded mode
+        else:
+            print(_fmt_subgraph_verbose(sub_output))
 
-    # return planner_output, sub_output
+    # ── Narration Agent ───────────────────────────────────────────────────────
+    narration_output = narration_agent.run(
+        query,
+        planner_output,
+        t2c_output=t2c_output,
+        subgraph_output=sub_output,
+        resolutions=resolutions,
+    )
+    print(_fmt_narration(narration_output))
+
+    return planner_output, t2c_output, sub_output, narration_output
+
+
+# ── Agentic query execution ───────────────────────────────────────────────────
+
+
+def _run_query_agentic(
+    planner: Planner,
+    orchestrator: AgentOrchestrator,
+    db: Neo4jManager,
+    query: str,
+    *,
+    clarifier: AnchorClarifier,
+    candidate_limit: int = 1,
+    strategy: str = "topk",
+    label: str | None = None,
+) -> tuple[PlannerOutput, Text2CypherOutput | None, SubgraphOutput | None, NarrationOutput | None]:
+    """
+    Execute a single query through the agentic pipeline.
+
+    Shares the Planner + AnchorResolver + AnchorClarifier pre-step
+    with _run_query() verbatim. After anchor resolution, delegates to
+    AgentOrchestrator.run() instead of the static QueryWriter/Subgraph fork.
+
+    Returns the same 4-tuple as _run_query() so the eval harness and mode
+    functions can treat both pipelines identically.
+    """
+    invocation_time = datetime.now(UTC)
+    prefix = f"{label}  " if label else ""
+
+    planner_output = planner.run(query)
+
+    header = f"\n{'═' * 56}\n{prefix}Query: {query!r}  [agentic]\n{'═' * 56}"
+    print(header)
+    print(_fmt_planner_verbose(planner_output))
+
+    if planner_output.rejected:
+        return planner_output, None, None, None
+
+    # ── Shared pre-step: anchor resolution + clarification ────────────────────
+    disambiguation_strategy = (
+        TypeWeightedCoherenceStrategy() if strategy == "coherence" else None
+    )
+    resolver = AnchorResolver(
+        db=db,
+        invocation_time=invocation_time,
+        strategy=disambiguation_strategy,
+        candidate_limit=candidate_limit,
+    )
+    try:
+        resolutions = resolver.resolve(planner_output.anchors)
+    except Neo4jError as exc:
+        log.error(
+            "run_agentic | anchor resolution failed | %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        print(f"\nDatabase error during anchor resolution: {exc}")
+        return planner_output, None, None, None
+
+    if resolutions.failed:
+        resolutions = clarifier.clarify(resolutions, resolver)
+
+    if resolutions.any_resolved:
+        log.info(
+            "run_agentic | anchors resolved | config=%s | %s",
+            resolver.config,
+            resolutions.as_flat_dict(),
+        )
+    else:
+        log.warning(
+            "run_agentic | zero anchors resolved — proceeding to agent loop | query=%r",
+            query,
+        )
+
+    # ── Agent loop ────────────────────────────────────────────────────────────
+    try:
+        t2c_output, sub_output, narration_output = orchestrator.run(
+            query,
+            planner_output,
+            resolutions,
+            resolver,
+            invocation_time,
+        )
+    except Neo4jError as exc:
+        log.error(
+            "run_agentic | agent loop failed | %s: %s",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        print(f"\nDatabase error during agent loop: {exc}")
+        return planner_output, None, None, None
+
+    print(_fmt_narration(narration_output))
+    return planner_output, t2c_output, sub_output, narration_output
 
 
 # ── Modes ─────────────────────────────────────────────────────────────────────
 
 def _mode_default(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
     query: str,
-    registry: SchemaRegistry,
     *,
+    registry: SliceRegistry,
+    clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
+    pipeline_mode: str = "static",
+    orchestrator: AgentOrchestrator | None = None,
 ) -> None:
-    _run_query(planner, db, registry, query, candidate_limit=candidate_limit, strategy=strategy)
+    if pipeline_mode == "agentic" and orchestrator is not None:
+        _run_query_agentic(
+            planner,
+            orchestrator,
+            db,
+            query,
+            clarifier=clarifier,
+            candidate_limit=candidate_limit,
+            strategy=strategy,
+        )
+    else:
+        _run_query(
+            planner,
+            narration_agent,
+            db,
+            query,
+            registry=registry,
+            clarifier=clarifier,
+            llm_config=llm_config,
+            candidate_limit=candidate_limit,
+            strategy=strategy,
+        )
 
 
 def _mode_demo(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
-    registry: SchemaRegistry,
     *,
+    registry: SliceRegistry,
+    clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
+    pipeline_mode: str = "static",
+    orchestrator: AgentOrchestrator | None = None,
 ) -> None:
     """
     Four hardcoded smoke test queries.
     Always runs in strict mode (enforced at registry construction by caller).
+    Supports both static and agentic modes for side-by-side comparison.
     """
-    print(f"Running {len(_DEMO_QUERIES)} demo queries in strict mode...\n")
-    results: list[tuple[str, PlannerOutput]] = []
+    mode_label = f"[{pipeline_mode}]"
+    print(f"Running {len(_DEMO_QUERIES)} demo queries in strict mode {mode_label}...\n")
+
+    results: list[tuple] = []
 
     for i, (query, expected_domain) in enumerate(_DEMO_QUERIES, 1):
         label = f"[{i}/{len(_DEMO_QUERIES)}]"
-        planner_output, _ = _run_query(
-            planner,
-            db,
-            query,
-            candidate_limit=candidate_limit,
-            strategy=strategy,
-            label=label,
-        )
-        results.append((expected_domain, planner_output))
+        if pipeline_mode == "agentic" and orchestrator is not None:
+            planner_output, t2c_output, _, narration_output = _run_query_agentic(
+                planner,
+                orchestrator,
+                db,
+                query,
+                clarifier=clarifier,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+                label=label,
+            )
+        else:
+            planner_output, t2c_output, _, narration_output = _run_query(
+                planner,
+                narration_agent,
+                db,
+                query,
+                registry=registry,
+                clarifier=clarifier,
+                llm_config=llm_config,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+                label=label,
+            )
+        results.append((expected_domain, planner_output, t2c_output, narration_output))
 
     print(f"\n{'═' * 56}")
     print("Demo summary:")
     all_passed = True
-    for (expected, output), (query, expected_domain) in zip(results, _DEMO_QUERIES, strict=True):
+    for (expected, planner_out, t2c_out, narration_out), (query, _) in zip(
+        results, _DEMO_QUERIES, strict=True
+    ):
+        checks: list[tuple[bool, str]] = []
+
         if expected == "rejection":
-            passed = output.rejected
+            checks.append((planner_out.rejected, "planner:rejected"))
         else:
-            passed = not output.rejected and output.domain == expected
-        status = "✅" if passed else "❌"
-        if not passed:
+            checks.append((not planner_out.rejected and planner_out.domain == expected, f"planner:domain={expected}"))
+            if planner_out.path in {"text2cypher", "both"}:
+                t2c_ok = t2c_out is not None and t2c_out.success
+                checks.append((t2c_ok, "t2c:valid"))
+                result_count = len(t2c_out.results) if t2c_out is not None else 0
+                checks.append((True, f"t2c:rows={result_count}"))
+            checks.append((narration_out is not None, "narration:produced"))
+
+        row_passed = all(ok for ok, _ in checks)
+        if not row_passed:
             all_passed = False
-        print(f"  {status}  {query[:52]!r:<54}  expected={expected}")
+        status = "✅" if row_passed else "❌"
+        detail = "  ".join(("✓" if ok else "✗") + lbl for ok, lbl in checks)
+        print(f"  {status}  {query[:48]!r:<50}  {detail}")
 
     print(f"\n{'All passed' if all_passed else 'Some checks failed'}")
 
 
 def _mode_repl(
     planner: Planner,
+    narration_agent: NarrationAgent,
     db: Neo4jManager,
     *,
+    registry: SliceRegistry,
+    clarifier: AnchorClarifier,
+    llm_config: LLMConfig,
     candidate_limit: int,
     strategy: str,
+    pipeline_mode: str = "static",
+    orchestrator: AgentOrchestrator | None = None,
 ) -> None:
     """
     Interactive query loop.
     Exits cleanly on 'quit', 'exit', or Ctrl+C / Ctrl+D.
     """
-    print("JourneyGraph query pipeline — interactive mode")
+    print(f"JourneyGraph query pipeline — interactive mode [{pipeline_mode}]")
     print(f"Resolver: candidate_limit={candidate_limit}  strategy={strategy}")
     print("Type a question, or 'quit' to exit.\n")
 
@@ -453,39 +773,60 @@ def _mode_repl(
             print("Exiting.")
             break
 
-        _run_query(
-            planner,
-            db,
-            query,
-            candidate_limit=candidate_limit,
-            strategy=strategy,
-        )
+        if pipeline_mode == "agentic" and orchestrator is not None:
+            _run_query_agentic(
+                planner,
+                orchestrator,
+                db,
+                query,
+                clarifier=clarifier,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+            )
+        else:
+            _run_query(
+                planner,
+                narration_agent,
+                db,
+                query,
+                registry=registry,
+                clarifier=clarifier,
+                llm_config=llm_config,
+                candidate_limit=candidate_limit,
+                strategy=strategy,
+            )
         print()
 
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
 
-def _startup(*, strict: bool) -> tuple[Planner, Neo4jManager]:
+def _startup(*, strict: bool) -> tuple[Planner, NarrationAgent, Neo4jManager, AnchorClarifier, SliceRegistry, LLMConfig]:
     """
     Initialise the full pipeline stack.
 
-    Returns (Planner, Neo4jManager). The Neo4j connection is held open
-    across queries for the Subgraph path and closed by main() on exit
-    via the finally block.
+    Returns (Planner, NarrationAgent, Neo4jManager, AnchorClarifier,
+    SliceRegistry, LLMConfig). The Neo4j connection is held open across
+    queries and closed by main() on exit via the finally block.
 
     Sequencing:
-      1. LLM config   — hard fail if ANTHROPIC_API_KEY missing
-      2. Neo4j        — hard fail if DB unreachable
-      3. SliceRegistry— validates slices against live graph
-      4. Planner      — builds LLM instance
+      1. LLM config      — hard fail if ANTHROPIC_API_KEY missing
+      2. Neo4j           — hard fail if DB unreachable
+      3. SliceRegistry   — validates slices against live graph
+      4. Planner         — builds Planner LLM instance (LLM_MAX_TOKENS)
+      5. NarrationAgent  — builds Narration LLM instance
+                           (LLM_NARRATION_MAX_TOKENS)
+      6. AnchorClarifier — fetches station/route catalogue from graph once
+      7. Registry + LLMConfig returned for Query Writer path
     """
     llm_config = get_llm_config()
     log.info(
-        "LLM config loaded — provider=%s model=%s max_tokens=%d",
+        "LLM config loaded — provider=%s model=%s "
+        "planner_max_tokens=%d narration_max_tokens=%d",
         llm_config.llm_provider,
         llm_config.llm_model,
         llm_config.llm_max_tokens,
+        llm_config.llm_narration_max_tokens,
     )
 
     db = Neo4jManager()
@@ -496,14 +837,47 @@ def _startup(*, strict: bool) -> tuple[Planner, Neo4jManager]:
     # at query time.
 
     planner = Planner(registry, llm_config, strict=strict)
-    return planner, db, registry
+    narration_agent = NarrationAgent(llm_config)
+    clarifier = AnchorClarifier(db, llm_config)
+    return planner, narration_agent, db, clarifier, registry, llm_config
+
+
+# ── Agentic startup ───────────────────────────────────────────────────────────
+
+
+def _startup_agentic(
+    *,
+    db: Neo4jManager,
+    llm_config: LLMConfig,
+    registry: SliceRegistry,
+    clarifier: AnchorClarifier,
+    narration_agent: NarrationAgent,
+) -> AgentOrchestrator:
+    """
+    Initialise the AgentOrchestrator after the standard _startup() completes.
+
+    All heavy deps (db, registry, clarifier, narration_agent) are reused from
+    _startup() — no additional DB queries or LLM instances are created here.
+
+    Returns:
+        AgentOrchestrator ready for run() calls.
+    """
+    return AgentOrchestrator(
+        db=db,
+        llm_config=llm_config,
+        registry=registry,
+        clarifier=clarifier,
+        narration_agent=narration_agent,
+    )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> None:
-    # Set up global logging configuration to show all internal module logs
+    # Configure root logger for third-party libraries (httpx, neo4j, etc.).
+    # Project loggers use get_logger(__name__) which writes to logs/pipeline.log
+    # directly (propagate=False), so this basicConfig only affects external libs.
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -513,6 +887,7 @@ def main(argv: list[str] | None = None) -> None:
     strict = args.strict or args.demo
     candidate_limit: int = args.candidate_limit
     strategy: str = args.strategy
+    pipeline_mode: str = args.mode
 
     if candidate_limit > 1:
         log.info(
@@ -521,37 +896,67 @@ def main(argv: list[str] | None = None) -> None:
             strategy,
         )
 
+    if pipeline_mode == "agentic":
+        log.info("Pipeline mode: agentic (agent loop, max 5 iterations)")
+
     try:
-        planner, db, registry = _startup(strict=strict)
+        planner, narration_agent, db, clarifier, registry, llm_config = _startup(strict=strict)
     except (OSError, RuntimeError) as exc:
         log.error("Startup failed: %s", exc)
         sys.exit(1)
+
+    # Conditionally initialise the AgentOrchestrator — only when agentic mode
+    # is requested. Static mode is unaffected and incurs no extra cost.
+    orchestrator: AgentOrchestrator | None = None
+    if pipeline_mode == "agentic":
+        orchestrator = _startup_agentic(
+            db=db,
+            llm_config=llm_config,
+            registry=registry,
+            clarifier=clarifier,
+            narration_agent=narration_agent,
+        )
 
     try:
         if args.demo:
             _mode_demo(
                 planner,
+                narration_agent,
                 db,
-                registry,
+                registry=registry,
+                clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
+                pipeline_mode=pipeline_mode,
+                orchestrator=orchestrator,
             )
         elif args.repl:
             _mode_repl(
                 planner,
+                narration_agent,
                 db,
-                registry,
+                registry=registry,
+                clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
+                pipeline_mode=pipeline_mode,
+                orchestrator=orchestrator,
             )
         elif args.query:
             _mode_default(
                 planner,
+                narration_agent,
                 db,
-                registry,
                 args.query,
+                registry=registry,
+                clarifier=clarifier,
+                llm_config=llm_config,
                 candidate_limit=candidate_limit,
                 strategy=strategy,
+                pipeline_mode=pipeline_mode,
+                orchestrator=orchestrator,
             )
         else:
             _parse_args(["--help"])
