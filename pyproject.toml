@@ -24,9 +24,10 @@ llm = [
     "tiktoken",
 ]
 demo = [
-    # Jupyter demo notebooks — install with: uv sync --extra llm --extra demo
+    # Jupyter demo notebooks — install with: uv sync --extra demo
     "neo4j-viz>=1.2.0",
     "ipykernel>=6.0",
+    "matplotlib>=3.9.0",   # subgraph visualization
     # LLM pipeline deps (mirrors [llm] group — duplicated so a single
     # `uv sync --extra demo` is sufficient without a separate --extra llm)
     "neo4j-graphrag[anthropic]>=1.14.0",
