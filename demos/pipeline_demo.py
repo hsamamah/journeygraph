@@ -191,9 +191,19 @@ def run_question(
         clarifier=clarifier,
         narration_agent=narration_agent,
     )
-    _, _, agent_narration = orchestrator.run(
-        question, planner_output, resolutions, resolver, invocation_time
-    )
+    try:
+        _, _, agent_narration = orchestrator.run(
+            question, planner_output, resolutions, resolver, invocation_time
+        )
+    except Exception as exc:
+        log.warning("Agentic pipeline failed: %s", exc)
+        agent_narration = NarrationOutput(
+            answer="(agentic pipeline unavailable)",
+            mode="degraded",
+            sources_used=[],
+            success=False,
+            failure_reason=str(exc),
+        )
 
     return QuestionResult(
         question=question,
@@ -316,9 +326,17 @@ def display_agentic_step(agent_narration: NarrationOutput) -> None:
         history = agent_narration.agent_trace.get("tool_call_history", [])
         print(f"  tools   : {len(history)} call(s)")
         for call in history:
-            name = call.get("tool_name") or call[0] if isinstance(call, (list, tuple)) else "?"
-            summary = call.get("summary", "") if isinstance(call, dict) else ""
-            print(f"    [{call.get('iteration', '?') if isinstance(call, dict) else '?'}] {name} — {summary}")
+            if isinstance(call, dict):
+                name = call.get("tool_name", "?")
+                summary = call.get("summary", "")
+                iteration = call.get("iteration", "?")
+            elif isinstance(call, (list, tuple)):
+                name = call[0] if call else "?"
+                summary = ""
+                iteration = "?"
+            else:
+                name = summary = iteration = "?"
+            print(f"    [{iteration}] {name} — {summary}")
     print(f"\n  Answer:\n{'═' * 56}")
     print(agent_narration.answer)
     print("═" * 56)
@@ -350,7 +368,7 @@ def visualize_subgraph(raw_subgraph: RawSubgraph, title: str = "Subgraph") -> No
 
     G: nx.DiGraph = nx.DiGraph()
 
-    node_color_list: list[str] = []
+    node_color_map: dict[str, str] = {}
     node_label_map: dict[str, str] = {}
     anchor_ids = raw_subgraph.anchor_element_ids
 
@@ -369,7 +387,7 @@ def visualize_subgraph(raw_subgraph: RawSubgraph, title: str = "Subgraph") -> No
         )
         G.add_node(node.element_id, primary_label=primary, is_anchor=node.element_id in anchor_ids)
         node_label_map[node.element_id] = f"{primary}\n{display_name}"
-        node_color_list.append(_LABEL_COLORS.get(primary, _DEFAULT_COLOR))
+        node_color_map[node.element_id] = _LABEL_COLORS.get(primary, _DEFAULT_COLOR)
 
     for rel in raw_subgraph.rels:
         if rel.from_element_id in G and rel.to_element_id in G:
@@ -385,8 +403,8 @@ def visualize_subgraph(raw_subgraph: RawSubgraph, title: str = "Subgraph") -> No
     # Draw non-anchor nodes
     non_anchor = [n for n in G.nodes if not G.nodes[n].get("is_anchor")]
     anchor_nodes = [n for n in G.nodes if G.nodes[n].get("is_anchor")]
-    non_anchor_colors = [node_color_list[list(G.nodes).index(n)] for n in non_anchor]
-    anchor_colors = [node_color_list[list(G.nodes).index(n)] for n in anchor_nodes]
+    non_anchor_colors = [node_color_map[n] for n in non_anchor]
+    anchor_colors = [node_color_map[n] for n in anchor_nodes]
 
     nx.draw_networkx_nodes(G, pos, nodelist=non_anchor, node_color=non_anchor_colors,
                            node_size=900, ax=ax, alpha=0.85)
