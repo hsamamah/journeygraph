@@ -1,0 +1,978 @@
+{
+  "version": 2,
+  "title": "JourneyGraph \u2014 Class Demo Dashboard",
+  "description": "WMATA transit knowledge graph \u2014 class presentation",
+  "pages": [
+    {
+      "version": 1,
+      "title": "Overview",
+      "widgets": [
+        {
+          "version": 1,
+          "title": "Relationship Type Counts (Top 15)",
+          "w": 6,
+          "h": 4,
+          "x": 6,
+          "y": 2,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH ()-[r]->()\nRETURN type(r) AS Relationship, count(r) AS Count\nORDER BY Count DESC\nLIMIT 15",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH ()-[r]->()\nRETURN type(r) AS Relationship, count(r) AS Count\nORDER BY Count DESC\nLIMIT 15",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Count"
+            ],
+            "orientation": "horizontal",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Metro Center \u2014 Graph Overview (Station + Routes + Platforms)",
+          "w": 12,
+          "h": 6,
+          "x": 0,
+          "y": 6,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (stn:Station {name: 'Metro Center'})\nOPTIONAL MATCH path_routes = (stn)<-[:SERVES]-(r:Route:Rail)\nOPTIONAL MATCH path_platforms = (stn)-[:CONTAINS]->(plt:Platform)\nRETURN stn, path_routes, path_platforms",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (stn:Station {name: 'Metro Center'})\nOPTIONAL MATCH path_routes = (stn)<-[:SERVES]-(r:Route:Rail)\nOPTIONAL MATCH path_platforms = (stn)-[:CONTAINS]->(plt:Platform)\nRETURN stn, path_routes, path_platforms",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Distinct Relationship Types",
+          "w": 3,
+          "h": 2,
+          "x": 9,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "CALL db.relationshipTypes() YIELD relationshipType RETURN count(relationshipType) AS Distinct_Rel_Types",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "CALL db.relationshipTypes() YIELD relationshipType RETURN count(relationshipType) AS Distinct_Rel_Types",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Node Counts by Primary Label",
+          "w": 6,
+          "h": 4,
+          "x": 0,
+          "y": 2,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (n)\nWHERE NOT n:TripUpdate AND NOT n:StopTimeUpdate\nWITH labels(n) AS lbls\nWITH [l IN lbls WHERE l IN ['Station','Platform','BusStop','Route','Trip','ServicePattern','Date','Interruption','OutageEvent','ServiceAlert','FareZone','FareProduct','Pathway','Level','StationEntrance','FareGate','RoutePattern','EntitySelector','Agency']][0] AS lbl\nWHERE lbl IS NOT NULL\nRETURN lbl AS Label, count(*) AS Count\nORDER BY Count DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH (n)\nWHERE NOT n:TripUpdate AND NOT n:StopTimeUpdate\nWITH labels(n) AS lbls\nWITH [l IN lbls WHERE l IN ['Station','Platform','BusStop','Route','Trip','ServicePattern','Date','Interruption','OutageEvent','ServiceAlert','FareZone','FareProduct','Pathway','Level','StationEntrance','FareGate','RoutePattern','EntitySelector','Agency']][0] AS lbl\nWHERE lbl IS NOT NULL\nRETURN lbl AS Label, count(*) AS Count\nORDER BY Count DESC",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Count"
+            ],
+            "orientation": "vertical",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Total Relationships",
+          "w": 3,
+          "h": 2,
+          "x": 3,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH ()-[r]->() RETURN count(r) AS Total_Relationships",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH ()-[r]->() RETURN count(r) AS Total_Relationships",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Total Nodes",
+          "w": 3,
+          "h": 2,
+          "x": 0,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (n) RETURN count(n) AS Total_Nodes",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH (n) RETURN count(n) AS Total_Nodes",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Distinct Node Labels",
+          "w": 3,
+          "h": 2,
+          "x": 6,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "CALL db.labels() YIELD label RETURN count(label) AS Distinct_Labels",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "CALL db.labels() YIELD label RETURN count(label) AS Distinct_Labels",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "title": "Calendar & Schedule",
+      "widgets": [
+        {
+          "version": 1,
+          "title": "Total Trips",
+          "w": 3,
+          "h": 2,
+          "x": 9,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (t:Trip) RETURN count(t) AS Total_Trips",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH (t:Trip) RETURN count(t) AS Total_Trips",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Earliest Service Date",
+          "w": 3,
+          "h": 2,
+          "x": 0,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (d:Date)\nWITH min(d.date) AS earliest\nRETURN left(earliest,4) + '-' + substring(earliest,4,2) + '-' + right(earliest,2) AS Earliest_Date",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH (d:Date)\nWITH min(d.date) AS earliest\nRETURN left(earliest,4) + '-' + substring(earliest,4,2) + '-' + right(earliest,2) AS Earliest_Date",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Metro Center \u2014 Scheduled Trips (Red Line, sample)",
+          "w": 6,
+          "h": 6,
+          "x": 6,
+          "y": 6,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (stn:Station {name: 'Metro Center'})-[:CONTAINS]->(plt:Platform)\nWHERE plt.id IN ['PF_A01_1', 'PF_A01_2']\nMATCH path_sched = (t:Trip)-[:SCHEDULED_AT]->(plt)\nMATCH path_patt  = (t)-[:FOLLOWS]->(rp:RoutePattern)<-[:HAS_PATTERN]-(r:Route {route_id: 'RED'})\nRETURN stn, plt, t, rp, r, path_sched, path_patt LIMIT 10",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (stn:Station {name: 'Metro Center'})-[:CONTAINS]->(plt:Platform)\nWHERE plt.id IN ['PF_A01_1', 'PF_A01_2']\nMATCH path_sched = (t:Trip)-[:SCHEDULED_AT]->(plt)\nMATCH path_patt  = (t)-[:FOLLOWS]->(rp:RoutePattern)<-[:HAS_PATTERN]-(r:Route {route_id: 'RED'})\nRETURN stn, plt, t, rp, r, path_sched, path_patt LIMIT 10",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Total Calendar Dates",
+          "w": 3,
+          "h": 2,
+          "x": 6,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (d:Date) RETURN count(d) AS Total_Dates",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH (d:Date) RETURN count(d) AS Total_Dates",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Active Dates per Service Pattern Type",
+          "w": 6,
+          "h": 4,
+          "x": 6,
+          "y": 2,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (sp:ServicePattern)-[:ACTIVE_ON]->(d:Date)\nRETURN\n  CASE\n    WHEN sp:Weekday THEN 'Weekday'\n    WHEN sp:Saturday THEN 'Saturday'\n    WHEN sp:Sunday THEN 'Sunday'\n    ELSE 'Other'\n  END AS Pattern,\n  count(DISTINCT d) AS Active_Dates\nORDER BY Active_Dates DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH (sp:ServicePattern)-[:ACTIVE_ON]->(d:Date)\nRETURN\n  CASE\n    WHEN sp:Weekday THEN 'Weekday'\n    WHEN sp:Saturday THEN 'Saturday'\n    WHEN sp:Sunday THEN 'Sunday'\n    ELSE 'Other'\n  END AS Pattern,\n  count(DISTINCT d) AS Active_Dates\nORDER BY Active_Dates DESC",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Active_Dates"
+            ],
+            "orientation": "vertical",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Latest Service Date",
+          "w": 3,
+          "h": 2,
+          "x": 3,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (d:Date)\nWITH max(d.date) AS latest\nRETURN left(latest,4) + '-' + substring(latest,4,2) + '-' + right(latest,2) AS Latest_Date",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH (d:Date)\nWITH max(d.date) AS latest\nRETURN left(latest,4) + '-' + substring(latest,4,2) + '-' + right(latest,2) AS Latest_Date",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Weekday ServicePattern \u2014 Active Dates Calendar",
+          "w": 6,
+          "h": 6,
+          "x": 0,
+          "y": 6,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (sp:ServicePattern:Weekday)\nWITH sp LIMIT 1\nMATCH path = (sp)-[:ACTIVE_ON]->(d:Date)\nRETURN sp, path LIMIT 14",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (sp:ServicePattern:Weekday)\nWITH sp LIMIT 1\nMATCH path = (sp)-[:ACTIVE_ON]->(d:Date)\nRETURN sp, path LIMIT 14",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Trips by Service Pattern Type",
+          "w": 6,
+          "h": 4,
+          "x": 0,
+          "y": 2,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (t:Trip)-[:OPERATED_ON]->(sp:ServicePattern)\nRETURN\n  CASE\n    WHEN sp:Weekday THEN 'Weekday'\n    WHEN sp:Saturday THEN 'Saturday'\n    WHEN sp:Sunday THEN 'Sunday'\n    ELSE 'Other'\n  END AS Pattern,\n  count(t) AS Trips\nORDER BY Trips DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH (t:Trip)-[:OPERATED_ON]->(sp:ServicePattern)\nRETURN\n  CASE\n    WHEN sp:Weekday THEN 'Weekday'\n    WHEN sp:Saturday THEN 'Saturday'\n    WHEN sp:Sunday THEN 'Sunday'\n    ELSE 'Other'\n  END AS Pattern,\n  count(t) AS Trips\nORDER BY Trips DESC",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Trips"
+            ],
+            "orientation": "vertical",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "title": "Service & Routes",
+      "widgets": [
+        {
+          "version": 1,
+          "title": "Multi-Line Transfer Hubs",
+          "w": 6,
+          "h": 4,
+          "x": 6,
+          "y": 4,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (r:Route:Rail)-[:SERVES]->(s:Station)\nWITH s, collect(DISTINCT r.route_short_name) AS Lines, count(DISTINCT r) AS Line_Count\nWHERE Line_Count > 1\nRETURN s.name AS Station, Line_Count, Lines\nORDER BY Line_Count DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH (r:Route:Rail)-[:SERVES]->(s:Station)\nWITH s, collect(DISTINCT r.route_short_name) AS Lines, count(DISTINCT r) AS Line_Count\nWHERE Line_Count > 1\nRETURN s.name AS Station, Line_Count, Lines\nORDER BY Line_Count DESC",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Trips per Rail Route",
+          "w": 6,
+          "h": 4,
+          "x": 0,
+          "y": 4,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (r:Route:Rail)-[:HAS_PATTERN]->(rp:RoutePattern)-[:HAS_TRIP]->(t:Trip)\nRETURN r.route_short_name AS Route, count(t) AS Trips\nORDER BY Trips DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH (r:Route:Rail)-[:HAS_PATTERN]->(rp:RoutePattern)-[:HAS_TRIP]->(t:Trip)\nRETURN r.route_short_name AS Route, count(t) AS Trips\nORDER BY Trips DESC",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Trips"
+            ],
+            "orientation": "vertical",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Rail Transfer Hubs \u2014 Route Graph",
+          "w": 6,
+          "h": 6,
+          "x": 0,
+          "y": 8,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (r:Route:Rail)-[:SERVES]->(s:Station)\nWITH s, count(DISTINCT r) AS line_count\nWHERE line_count > 1\nMATCH path = (r2:Route:Rail)-[:SERVES]->(s)\nRETURN path LIMIT 60",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (r:Route:Rail)-[:SERVES]->(s:Station)\nWITH s, count(DISTINCT r) AS line_count\nWHERE line_count > 1\nMATCH path = (r2:Route:Rail)-[:SERVES]->(s)\nRETURN path LIMIT 60",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Top 15 Busiest Stations \u2014 All Trips",
+          "w": 8,
+          "h": 4,
+          "x": 4,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (t:Trip)-[:SCHEDULED_AT]->(p:Platform)<-[:CONTAINS]-(s:Station)\nRETURN s.name AS Station, count(DISTINCT t) AS Total_Trips\nORDER BY Total_Trips DESC\nLIMIT 15",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH (t:Trip)-[:SCHEDULED_AT]->(p:Platform)<-[:CONTAINS]-(s:Station)\nRETURN s.name AS Station, count(DISTINCT t) AS Total_Trips\nORDER BY Total_Trips DESC\nLIMIT 15",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Weekday_Trips"
+            ],
+            "orientation": "horizontal",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Routes by Mode",
+          "w": 4,
+          "h": 4,
+          "x": 0,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (r:Route)\nRETURN CASE WHEN r:Rail THEN 'Rail' ELSE 'Bus' END AS Mode, count(r) AS Count",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "pie",
+            "query": "MATCH (r:Route)\nRETURN CASE WHEN r:Rail THEN 'Rail' ELSE 'Bus' END AS Mode, count(r) AS Count",
+            "databaseName": "neo4j",
+            "version": 1,
+            "showLegend": true,
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Red Line \u2014 Route Patterns Graph",
+          "w": 6,
+          "h": 6,
+          "x": 6,
+          "y": 8,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH path = (r:Route {route_id: 'RED'})-[:HAS_PATTERN]->(rp:RoutePattern)\nRETURN path",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH path = (r:Route {route_id: 'RED'})-[:HAS_PATTERN]->(rp:RoutePattern)\nRETURN path",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "title": "Physical Layer",
+      "widgets": [
+        {
+          "version": 1,
+          "title": "L'Enfant Plaza \u2014 5-Line Transfer Hub",
+          "w": 6,
+          "h": 6,
+          "x": 6,
+          "y": 4,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (stn:Station {name: \"L'Enfant Plaza\"})\nOPTIONAL MATCH path_routes = (stn)<-[:SERVES]-(r:Route:Rail)\nOPTIONAL MATCH path_platforms = (stn)-[:CONTAINS]->(plt:Platform)\nRETURN stn, path_routes, path_platforms",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (stn:Station {name: \"L'Enfant Plaza\"})\nOPTIONAL MATCH path_routes = (stn)<-[:SERVES]-(r:Route:Rail)\nOPTIONAL MATCH path_platforms = (stn)-[:CONTAINS]->(plt:Platform)\nRETURN stn, path_routes, path_platforms",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Metro Center \u2014 Accessible Walking Path (Entrance \u2192 Platform)",
+          "w": 6,
+          "h": 6,
+          "x": 0,
+          "y": 10,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "CALL gds.graph.drop('walkPath', false)\nYIELD graphName\nWITH graphName\nCALL gds.graph.project.cypher(\n  'walkPath',\n  'MATCH (n)\n   WHERE (n:StationEntrance OR n:Platform OR n:FareGate OR n:Pathway)\n   AND NOT n.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   RETURN id(n) AS id',\n  'MATCH (a)-[:LINKS]->(b)\n   WHERE NOT a.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   AND NOT b.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   RETURN id(a) AS source, id(b) AS target'\n)\nYIELD graphName AS gn\nMATCH (ent:StationEntrance {id: 'ENT_A01_C01_E'})\nMATCH (plt:Platform {id: 'PF_A01_1'})\nCALL gds.bfs.stream(gn, {sourceNode: ent, targetNodes: [plt]})\nYIELD path\nWITH ent, plt, nodes(path) AS ns1\nCALL gds.bfs.stream('walkPath', {sourceNode: plt, targetNodes: [ent]})\nYIELD path AS path2\nWITH ent, plt, ns1, [n IN nodes(path2) WHERE n IN ns1] AS ns_intersect\nUNWIND ns_intersect AS n\nWITH ent, plt, n\nWHERE NOT (n:StationEntrance AND n <> ent)\nAND NOT (n:Platform AND n <> plt)\nWITH ent, plt, collect(DISTINCT n) AS ns\nMATCH (a)-[lnk:LINKS]->(b)\nWHERE a IN ns AND b IN ns\nWITH ent, ns, collect(lnk) AS links\nMATCH (stn:Station {name: 'Metro Center'})-[c:CONTAINS]->(ent)\nMATCH (pw:Pathway {id: 'A01_C01_104175'})\nRETURN stn, c, ent, ns, links, pw",
+                "origin": "user"
+              },
+              {
+                "query": "CALL gds.graph.project.cypher(\n  'walkPath',\n  'MATCH (n)\n   WHERE (n:StationEntrance OR n:Platform OR n:FareGate OR n:Pathway)\n   AND NOT n.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   RETURN id(n) AS id',\n  'MATCH (a)-[:LINKS]->(b)\n   WHERE NOT a.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   AND NOT b.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   RETURN id(a) AS source, id(b) AS target'\n)\nYIELD graphName\nMATCH (ent:StationEntrance {id: 'ENT_A01_C01_E'})\nMATCH (plt:Platform {id: 'PF_A01_1'})\nCALL gds.bfs.stream(graphName, {sourceNode: ent, targetNodes: [plt]})\nYIELD path\nWITH ent, plt, nodes(path) AS ns1\nCALL gds.bfs.stream('walkPath', {sourceNode: plt, targetNodes: [ent]})\nYIELD path AS path2\nWITH ent, plt, ns1, [n IN nodes(path2) WHERE n IN ns1] AS ns_intersect\nUNWIND ns_intersect AS n\nWITH ent, plt, n\nWHERE NOT (n:StationEntrance AND n <> ent)\nAND NOT (n:Platform AND n <> plt)\nWITH ent, plt, collect(DISTINCT n) AS ns\nMATCH (a)-[lnk:LINKS]->(b)\nWHERE a IN ns AND b IN ns\nWITH ent, ns, collect(lnk) AS links\nMATCH (stn:Station {name: 'Metro Center'})-[c:CONTAINS]->(ent)\nMATCH (pw:Pathway {id: 'A01_C01_104175'})\nRETURN stn, c, ent, ns, links, pw",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "CALL gds.graph.drop('walkPath', false)\nYIELD graphName\nWITH graphName\nCALL gds.graph.project.cypher(\n  'walkPath',\n  'MATCH (n)\n   WHERE (n:StationEntrance OR n:Platform OR n:FareGate OR n:Pathway)\n   AND NOT n.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   RETURN id(n) AS id',\n  'MATCH (a)-[:LINKS]->(b)\n   WHERE NOT a.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   AND NOT b.id IN [\"A01_C01_104197\", \"A01_C01_104188\", \"A01_C01_104183\"]\n   RETURN id(a) AS source, id(b) AS target'\n)\nYIELD graphName AS gn\nMATCH (ent:StationEntrance {id: 'ENT_A01_C01_E'})\nMATCH (plt:Platform {id: 'PF_A01_1'})\nCALL gds.bfs.stream(gn, {sourceNode: ent, targetNodes: [plt]})\nYIELD path\nWITH ent, plt, nodes(path) AS ns1\nCALL gds.bfs.stream('walkPath', {sourceNode: plt, targetNodes: [ent]})\nYIELD path AS path2\nWITH ent, plt, ns1, [n IN nodes(path2) WHERE n IN ns1] AS ns_intersect\nUNWIND ns_intersect AS n\nWITH ent, plt, n\nWHERE NOT (n:StationEntrance AND n <> ent)\nAND NOT (n:Platform AND n <> plt)\nWITH ent, plt, collect(DISTINCT n) AS ns\nMATCH (a)-[lnk:LINKS]->(b)\nWHERE a IN ns AND b IN ns\nWITH ent, ns, collect(lnk) AS links\nMATCH (stn:Station {name: 'Metro Center'})-[c:CONTAINS]->(ent)\nMATCH (pw:Pathway {id: 'A01_C01_104175'})\nRETURN stn, c, ent, ns, links, pw",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Metro Center \u2014 Lower Mezzanine Walkway Network",
+          "w": 6,
+          "h": 6,
+          "x": 6,
+          "y": 10,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (lv:Level {level_id: 'A01_C01_L2'})\nMATCH path = (lv)<-[:ON_LEVEL]-(w:Pathway:Walkway)\nRETURN path LIMIT 40",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (lv:Level {level_id: 'A01_C01_L2'})\nMATCH path = (lv)<-[:ON_LEVEL]-(w:Pathway:Walkway)\nRETURN path LIMIT 40",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Pathway Types",
+          "w": 4,
+          "h": 4,
+          "x": 0,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (p:Pathway)\nRETURN\n  CASE\n    WHEN p:Elevator THEN 'Elevator'\n    WHEN p:Escalator THEN 'Escalator'\n    WHEN p:Walkway THEN 'Walkway'\n    WHEN p:Stairs THEN 'Stairs'\n    ELSE 'Other'\n  END AS Type,\n  count(p) AS Count\nORDER BY Count DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "pie",
+            "query": "MATCH (p:Pathway)\nRETURN\n  CASE\n    WHEN p:Elevator THEN 'Elevator'\n    WHEN p:Escalator THEN 'Escalator'\n    WHEN p:Walkway THEN 'Walkway'\n    WHEN p:Stairs THEN 'Stairs'\n    ELSE 'Other'\n  END AS Type,\n  count(p) AS Count\nORDER BY Count DESC",
+            "databaseName": "neo4j",
+            "version": 1,
+            "showLegend": true,
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Stations with Active Elevator/Escalator Outages",
+          "w": 8,
+          "h": 4,
+          "x": 4,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (o:OutageEvent {status: 'active'})-[:AFFECTS]->(p:Pathway)<-[:CONTAINS]-(stn:Station)\nRETURN stn.name AS Station,\n  count(CASE WHEN p:Elevator THEN 1 END) AS Elevator_Outages,\n  count(CASE WHEN p:Escalator THEN 1 END) AS Escalator_Outages\nORDER BY Elevator_Outages + Escalator_Outages DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH (o:OutageEvent {status: 'active'})-[:AFFECTS]->(p:Pathway)<-[:CONTAINS]-(stn:Station)\nRETURN stn.name AS Station,\n  count(CASE WHEN p:Elevator THEN 1 END) AS Elevator_Outages,\n  count(CASE WHEN p:Escalator THEN 1 END) AS Escalator_Outages\nORDER BY Elevator_Outages + Escalator_Outages DESC",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Elevator_Outages",
+              "Escalator_Outages"
+            ],
+            "orientation": "horizontal",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Glenmont \u2014 Full Station Map",
+          "w": 6,
+          "h": 6,
+          "x": 0,
+          "y": 4,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (stn:Station {name: 'Glenmont'})\nMATCH path1 = (stn)-[:CONTAINS]->(child)\nWHERE child:Platform OR child:StationEntrance OR child:FareGate OR child:Pathway\nOPTIONAL MATCH path2 = (child)-[:LINKS]-(linked)\nRETURN stn, path1, path2",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (stn:Station {name: 'Glenmont'})\nMATCH path1 = (stn)-[:CONTAINS]->(child)\nWHERE child:Platform OR child:StationEntrance OR child:FareGate OR child:Pathway\nOPTIONAL MATCH path2 = (child)-[:LINKS]-(linked)\nRETURN stn, path1, path2",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Metro Center \u2014 BFS Accessibility Reachability (GDS)",
+          "w": 6,
+          "h": 5,
+          "x": 6,
+          "y": 16,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "CALL gds.graph.drop('accessBFS', false)\nYIELD graphName\nWITH graphName\nCALL gds.graph.project.cypher(\n  'accessBFS',\n  'MATCH (n) WHERE n:StationEntrance OR n:Platform OR n:FareGate OR n:Pathway RETURN id(n) AS id',\n  'MATCH (a)-[:LINKS]->(b) RETURN id(a) AS source, id(b) AS target'\n)\nYIELD graphName AS gn\nMATCH (stn:Station {name: 'Metro Center'})-[:CONTAINS]->(entrance:StationEntrance)\nWITH gn, entrance LIMIT 1\nCALL gds.bfs.stream(gn, {sourceNode: entrance})\nYIELD path\nUNWIND nodes(path) AS n\nWITH DISTINCT n\nWHERE n:Platform OR n:FareGate OR n:StationEntrance\nRETURN labels(n)[0] AS Node_Type, n.name AS Name, n.id AS ID\nORDER BY Node_Type, Name",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "CALL gds.graph.drop('accessBFS', false)\nYIELD graphName\nWITH graphName\nCALL gds.graph.project.cypher(\n  'accessBFS',\n  'MATCH (n) WHERE n:StationEntrance OR n:Platform OR n:FareGate OR n:Pathway RETURN id(n) AS id',\n  'MATCH (a)-[:LINKS]->(b) RETURN id(a) AS source, id(b) AS target'\n)\nYIELD graphName AS gn\nMATCH (stn:Station {name: 'Metro Center'})-[:CONTAINS]->(entrance:StationEntrance)\nWITH gn, entrance LIMIT 1\nCALL gds.bfs.stream(gn, {sourceNode: entrance})\nYIELD path\nUNWIND nodes(path) AS n\nWITH DISTINCT n\nWHERE n:Platform OR n:FareGate OR n:StationEntrance\nRETURN labels(n)[0] AS Node_Type, n.name AS Name, n.id AS ID\nORDER BY Node_Type, Name",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        }
+      ]
+    },
+    {
+      "version": 1,
+      "title": "Disruptions & Accessibility",
+      "widgets": [
+        {
+          "version": 1,
+          "title": "Single Skip Interruption \u2014 Full Neighbourhood",
+          "w": 6,
+          "h": 5,
+          "x": 0,
+          "y": 10,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (i:Interruption:Skip {interruption_id: 'int_skip_115_14'})\nMATCH path_date  = (i)-[:ON_DATE]->(d:Date)\nMATCH path_route = (i)-[:AFFECTS_ROUTE]->(r:Route)\nMATCH path_tu    = (i)-[:SOURCED_FROM]->(tu:TripUpdate)\nRETURN i, path_date, path_route, path_tu LIMIT 8",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (i:Interruption:Skip {interruption_id: 'int_skip_115_14'})\nMATCH path_date  = (i)-[:ON_DATE]->(d:Date)\nMATCH path_route = (i)-[:AFFECTS_ROUTE]->(r:Route)\nMATCH path_tu    = (i)-[:SOURCED_FROM]->(tu:TripUpdate)\nRETURN i, path_date, path_route, path_tu LIMIT 8",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Blue Line Incident \u2014 Skipped Stations (2026-04-13)",
+          "w": 6,
+          "h": 6,
+          "x": 0,
+          "y": 4,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (i:Interruption:Skip)-[:ON_DATE]->(d:Date {date: '20260413'})\nMATCH (i)-[:AFFECTS_ROUTE]->(r:Route {route_id: 'BLUE'})\nWHERE i.interruption_id STARTS WITH 'int_skip_115_'\nWITH i, d, r,\n     split(split(i.description, 'Stop ')[1], ' skipped')[0] AS platform_id\nMATCH path_plt = (stn:Station)-[:CONTAINS]->(plt:Platform {id: platform_id})\nMATCH path_int = (i)-[:ON_DATE]->(d)\nMATCH path_rt  = (i)-[:AFFECTS_ROUTE]->(r)\nRETURN i, stn, plt, path_plt, path_int, path_rt",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH (i:Interruption:Skip)-[:ON_DATE]->(d:Date {date: '20260413'})\nMATCH (i)-[:AFFECTS_ROUTE]->(r:Route {route_id: 'BLUE'})\nWHERE i.interruption_id STARTS WITH 'int_skip_115_'\nWITH i, d, r,\n     split(split(i.description, 'Stop ')[1], ' skipped')[0] AS platform_id\nMATCH path_plt = (stn:Station)-[:CONTAINS]->(plt:Platform {id: platform_id})\nMATCH path_int = (i)-[:ON_DATE]->(d)\nMATCH path_rt  = (i)-[:AFFECTS_ROUTE]->(r)\nRETURN i, stn, plt, path_plt, path_int, path_rt",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Blue Line \u2014 Alert + Skip Interruptions Graph",
+          "w": 6,
+          "h": 6,
+          "x": 6,
+          "y": 4,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH path_alert = (sa:ServiceAlert)-[:HAS_SELECTOR]->(es:EntitySelector)\n                   -[:TARGETS_ROUTE]->(r:Route {route_id: 'BLUE'})\nMATCH path_skip  = (i:Interruption:Skip)-[:AFFECTS_ROUTE]->(r)\nMATCH path_date  = (i)-[:ON_DATE]->(d:Date {date: '20260413'})\nRETURN sa, es, r, i, d, path_alert, path_skip, path_date LIMIT 12",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH path_alert = (sa:ServiceAlert)-[:HAS_SELECTOR]->(es:EntitySelector)\n                   -[:TARGETS_ROUTE]->(r:Route {route_id: 'BLUE'})\nMATCH path_skip  = (i:Interruption:Skip)-[:AFFECTS_ROUTE]->(r)\nMATCH path_date  = (i)-[:ON_DATE]->(d:Date {date: '20260413'})\nRETURN sa, es, r, i, d, path_alert, path_skip, path_date LIMIT 12",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Interruptions by Type",
+          "w": 6,
+          "h": 4,
+          "x": 0,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (i:Interruption)\nRETURN\n  CASE\n    WHEN i:Skip THEN 'Skip'\n    WHEN i:Delay THEN 'Delay'\n    WHEN i:Cancellation THEN 'Cancellation'\n    WHEN i:Accessibility THEN 'Accessibility'\n    ELSE 'Other'\n  END AS Type,\n  count(i) AS Count\nORDER BY Count DESC",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "bar",
+            "query": "MATCH (i:Interruption)\nRETURN\n  CASE\n    WHEN i:Skip THEN 'Skip'\n    WHEN i:Delay THEN 'Delay'\n    WHEN i:Cancellation THEN 'Cancellation'\n    WHEN i:Accessibility THEN 'Accessibility'\n    ELSE 'Other'\n  END AS Type,\n  count(i) AS Count\nORDER BY Count DESC",
+            "databaseName": "neo4j",
+            "valueKeys": [
+              "Count"
+            ],
+            "orientation": "vertical",
+            "scaleType": "linear",
+            "showLegend": "auto",
+            "showDataZoom": "auto",
+            "version": 1,
+            "barArrangement": "grouped",
+            "enableDownloadImage": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Active Service Alerts",
+          "w": 6,
+          "h": 4,
+          "x": 6,
+          "y": 0,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH (sa:ServiceAlert)-[:HAS_SELECTOR]->(es:EntitySelector)-[:TARGETS_ROUTE]->(r:Route:Rail)\nRETURN sa.alert_id AS Alert_ID, sa.effect AS Effect, sa.severity AS Severity, r.route_short_name AS Route\nORDER BY r.route_short_name",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "table",
+            "query": "MATCH (sa:ServiceAlert)-[:HAS_SELECTOR]->(es:EntitySelector)-[:TARGETS_ROUTE]->(r:Route:Rail)\nRETURN sa.alert_id AS Alert_ID, sa.effect AS Effect, sa.severity AS Severity, r.route_short_name AS Route\nORDER BY r.route_short_name",
+            "databaseName": "neo4j",
+            "actions": [],
+            "version": 1,
+            "richRenderCells": false,
+            "enableRecordsDownload": true
+          }
+        },
+        {
+          "version": 1,
+          "title": "Active Accessibility Outages \u2014 Network Wide",
+          "w": 6,
+          "h": 5,
+          "x": 6,
+          "y": 10,
+          "meta": {
+            "latestCypherQueries": [
+              {
+                "query": "MATCH path_out = (o:OutageEvent {status: 'active'})-[:AFFECTS]->(p:Pathway)\nMATCH path_stn = (stn:Station)-[:CONTAINS]->(p)\nRETURN o, p, stn, path_out, path_stn LIMIT 30",
+                "origin": "user"
+              }
+            ]
+          },
+          "settings": {
+            "type": "graph",
+            "query": "MATCH path_out = (o:OutageEvent {status: 'active'})-[:AFFECTS]->(p:Pathway)\nMATCH path_stn = (stn:Station)-[:CONTAINS]->(p)\nRETURN o, p, stn, path_out, path_stn LIMIT 30",
+            "databaseName": "neo4j",
+            "version": 2,
+            "enableSidePanel": true,
+            "enableContextMenu": true,
+            "layout": {
+              "type": "d3Force"
+            },
+            "enableDownloadImage": true
+          }
+        }
+      ]
+    }
+  ],
+  "params": []
+}

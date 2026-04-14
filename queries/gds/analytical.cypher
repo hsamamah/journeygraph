@@ -180,3 +180,24 @@ RETURN
     triangleCount AS triangle_count
 ORDER BY triangle_count DESC
 LIMIT 10;
+
+// ── Q10: BFS accessibility — physical pathway reachability from entrance ───
+// "Which platforms and fare gates are reachable from a station entrance
+//  via the physical LINKS graph (wheelchair pathway network)?"
+// Projects the physical pathway graph (StationEntrance, Platform, FareGate,
+// Pathway nodes connected by LINKS), then BFS from one entrance.
+// Nodes returned = everything reachable = the accessible footprint.
+// Replace station name to check any station.
+CALL gds.graph.project('accessBFS',
+    ['StationEntrance', 'Platform', 'FareGate', 'Pathway'],
+    {LINKS: {type: 'LINKS', orientation: 'UNDIRECTED'}})
+YIELD graphName
+MATCH (stn:Station {name: 'Metro Center'})-[:CONTAINS]->(entrance:StationEntrance)
+WITH graphName, entrance LIMIT 1
+CALL gds.bfs.stream(graphName, {sourceNode: entrance})
+YIELD path
+UNWIND nodes(path) AS n
+WITH DISTINCT n
+WHERE n:Platform OR n:FareGate OR n:StationEntrance
+RETURN labels(n)[0] AS node_type, n.name AS name, n.id AS id
+ORDER BY node_type, name;
