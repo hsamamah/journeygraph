@@ -74,7 +74,12 @@ Do not fabricate trip IDs, station codes, route identifiers, node IDs, \
 or any other identifiers not present in the provided data.
 Do not describe how you obtained the data or reference internal system \
 components unless the user explicitly asks.\
-"""
+### CRITICAL VERIFICATION PROTOCOL\
+1. **No Numerical Drift:** Match numbers exactly.\
+2. **Strict Entity Grounding:** You are STRICTLY FORBIDDEN from mentioning any station name, route ID, or equipment ID (e.g., B01_F01_119167) that does not appear in the data blocks below. \
+3. **Operational Default vs. Fabrication:** - If a specific entity (like an Elevator) is listed in the results, but its 'outage' field is empty/null, state 'Operational'.\
+   - If the entity is NOT listed in the results at all, do not mention it or assume its status. \
+4. **No Speculative Fill:** If the user asks about 'Elevators at Gallery Place' and the data only shows 2 elevators, do not mention a 3rd one even if you 'think' it exists."""
 
 
 # ── System prompt — Section 2 (varies per mode) ───────────────────────────────
@@ -91,19 +96,21 @@ _SECTION2: dict[str, str] = {
     "precision": (
         "You have precise query results only — no topological graph context "
         "is available for this query. "
+        "You MUST only report the exact numbers provided in the 'PRECISE RESULTS' table."
+        "If the table has 113 rows, do not say 'over 100'; say '113'."
         "Answer directly using the counts, identifiers, and structured data "
         "provided. "
         "Do not speculate about broader network effects or causes not evident "
         "in the results."
+        "DO NOT perform addition or aggregation unless the 'PRECISE RESULTS' block already did it for you."
+        "If the user asks for a specific date and the data is for a different date, you must state the data date clearly."
     ),
     "contextual": (
-        "You have topological graph context only — no precise counts or query "
-        "results are available for this query. "
-        "Describe the structural relationships and patterns visible in the "
-        "graph context. "
-        "Qualify any quantities you mention (e.g. 'at least', 'several') — "
-        "do not state exact counts unless they appear explicitly in the "
-        "graph context."
+        "You are describing a network topology based on Graph Context."
+        "1. Only describe nodes and relationships explicitly listed in the 'GRAPH CONTEXT' block."
+        "2. If a node exists but has no properties indicating failure, report it as 'Operational'."
+        "3. If a node is missing entirely from the Graph Context, you must state that no information is available for that specific entity."
+        "4. DO NOT invent 'Working' statuses for entities that are not present in your data stream."
     ),
     "degraded": (
         "Limited or no graph data is available for this query. "
@@ -128,7 +135,9 @@ _SECTION3: dict[str, str] = {
         "disrupted, at which stations, and for which services. "
         "If cancellation counts are available, lead with them. "
         "If transfer partner context is available, explain the downstream "
-        "impact on connecting services."
+        "impact on connecting services. "
+        "If the PRECISE RESULTS section contains an empty list for Skips or Interruptions, "
+        "you must inform the user that service is Normal/OK. Do not claim the data is missing."
     ),
     "accessibility": (
         "Focus on pathway accessibility loss: which elevator or escalator "
@@ -138,7 +147,10 @@ _SECTION3: dict[str, str] = {
         "stations. "
         "Keep OutageEvent (WMATA Incidents API) and service Interruptions "
         "(GTFS-RT) conceptually separate — they come from different sources "
-        "and share no common key."
+        "and share no common key. "
+        "If the PRECISE RESULTS section contains an empty list for OutageEvents, "
+        "you must inform the user that all accessibility pathways are Normal/OK. "
+        "Do not claim the data is missing."
     ),
     "delay_propagation": (
         "Focus on delay origin and downstream spread: where the delay "
@@ -147,7 +159,9 @@ _SECTION3: dict[str, str] = {
         "If provenance data is present (TripUpdate, StopTimeUpdate), use it "
         "to explain the cause of the delay, not just its existence. "
         "Note the 5-minute (300 s) threshold — delays below this have no "
-        "Interruption node in the graph."
+        "Interruption node in the graph. "
+        "If the PRECISE RESULTS section contains an empty list for Interruptions or Delays, "
+        "you must inform the user that service is Normal/OK. Do not claim the data is missing."
     ),
 }
 
@@ -174,7 +188,9 @@ class NarrationAgent:
 
     def __init__(self, llm_config: LLMConfig) -> None:
         self._llm_config = llm_config
-        self._llm = build_llm(llm_config, max_tokens=llm_config.llm_narration_max_tokens)
+        self._llm = build_llm(
+            llm_config, max_tokens=llm_config.llm_narration_max_tokens
+        )
         log.debug(
             "NarrationAgent ready — provider=%s model=%s narration_max_tokens=%d",
             llm_config.llm_provider,
@@ -220,7 +236,9 @@ class NarrationAgent:
             domain,
             mode,
             "success" if (t2c_output and t2c_output.success) else "absent/failed",
-            "success" if (subgraph_output and subgraph_output.success) else "absent/failed",
+            "success"
+            if (subgraph_output and subgraph_output.success)
+            else "absent/failed",
         )
 
         system_prompt = self._build_system_prompt(mode, domain)
@@ -230,7 +248,7 @@ class NarrationAgent:
 
         try:
             answer = self._invoke_llm(system_prompt, user_message)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failure = f"NarrationAgent LLM call failed [{type(exc).__name__}]: {exc}"
             log.error(
                 "NarrationAgent.run | LLM call failed | %s: %s",
@@ -243,7 +261,9 @@ class NarrationAgent:
                 mode=mode,
                 sources_used=[],
                 domain=domain,
-                trace=self._build_trace(planner_output, t2c_output, subgraph_output, mode),
+                trace=self._build_trace(
+                    planner_output, t2c_output, subgraph_output, mode
+                ),
                 success=False,
                 failure_reason=failure,
             )
@@ -375,9 +395,8 @@ class NarrationAgent:
 
         # ── PRECISE RESULTS ────────────────────────────────────────────────────
         if t2c_output is not None and t2c_output.success:
-            attempt_note = (
-                f"{t2c_output.attempt_count} attempt"
-                + ("s" if t2c_output.attempt_count != 1 else "")
+            attempt_note = f"{t2c_output.attempt_count} attempt" + (
+                "s" if t2c_output.attempt_count != 1 else ""
             )
             lines.append(f"PRECISE RESULTS [from Text2Cypher — {attempt_note}]")
             if t2c_output.results:
@@ -403,7 +422,9 @@ class NarrationAgent:
         else:
             lines.append("GRAPH CONTEXT")
             if subgraph_output is not None and subgraph_output.failure_reason:
-                lines.append(f"[Subgraph not available: {subgraph_output.failure_reason}]")
+                lines.append(
+                    f"[Subgraph not available: {subgraph_output.failure_reason}]"
+                )
             else:
                 lines.append("[Subgraph not available for this query]")
 

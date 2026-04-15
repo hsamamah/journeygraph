@@ -75,18 +75,35 @@ ORDER BY sl.level_index;
 
 // ── Q4: Active outage count at a station ─────────────────────────────────
 // "How many elevators are out of service at Metro Center?"
+// "How many accessible elevator routes connect street level to the platform, and are any out of service?"
 // count(DISTINCT o) avoids fan-out from multiple elevator matches.
 // NULL o.unit_name means no active outage for that elevator (working).
-// NOTE: Do NOT use AFFECTS_ROUTE or SERVES here — those relationships are
-// not in the accessibility schema slice. Route disruptions are a separate
-// domain (delay_propagation). Query only OutageEvent via AFFECTS.
+// DO NOT use Level nodes or ON_LEVEL for outage count questions — use CONTAINS → Elevator directly.
+// DO NOT use AFFECTS_ROUTE or SERVES here — those are delay_propagation, not accessibility.
 MATCH (s:Station {id: $station_id})
 OPTIONAL MATCH (s)-[:CONTAINS]->(e:Pathway:Elevator)
-OPTIONAL MATCH (o:OutageEvent)-[:AFFECTS]->(e)
+OPTIONAL MATCH (o:OutageEvent {status: 'active'})-[:AFFECTS]->(e)
 RETURN
   s.name                       AS station,
   count(DISTINCT e)            AS total_elevators,
-  count(DISTINCT o)            AS active_outages;
+  count(DISTINCT o)            AS active_outages,
+  collect(DISTINCT e.id)       AS elevator_ids;
+
+// ── Q4b: Elevator count + outage check (level phrasing, no Level filter) ──
+// "How many accessible elevator routes connect street level to the platform at Metro Center,
+//  and are any of those elevators currently out of service?"
+// CRITICAL: Even though the question mentions "street level" and "platform level", do NOT
+// filter by Level nodes or use ON_LEVEL. All elevators at a station serve floor-to-floor
+// movement — count them all via CONTAINS then check for active outages via AFFECTS.
+// Level nodes are only needed when the question asks for the level_name or level_index values.
+MATCH (s:Station {id: $station_id})
+OPTIONAL MATCH (s)-[:CONTAINS]->(e:Pathway:Elevator)
+OPTIONAL MATCH (o:OutageEvent {status: 'active'})-[:AFFECTS]->(e)
+RETURN
+  s.name                       AS station,
+  count(DISTINCT e)            AS total_elevators,
+  count(DISTINCT o)            AS active_outages,
+  collect(DISTINCT e.id)       AS elevator_ids;
 
 // ── Q5: Escalator outage status at a station ─────────────────────────────
 // Same OPTIONAL MATCH pattern as Q1 — null fields mean no recorded outage.
@@ -117,3 +134,37 @@ RETURN
   i.description                AS description,
   d.date                       AS date
 ORDER BY d.date DESC;
+
+// ── Q7: Escalators reachable from station entrances (LINKS traversal) ────
+// "Which escalators at Pentagon City connect to the platform level?"
+// "Are the escalators at Metro Center working?"
+// Use StationEntrance → LINKS → Escalator when the question is about which
+// escalators a passenger can actually reach from the station entrance.
+// Do NOT use CONTAINS for this — CONTAINS returns all escalators including
+// ones not reachable via entrances. LINKS*1..3 follows the physical path graph.
+MATCH (s:Station)-[:CONTAINS]->(se:StationEntrance)
+WHERE s.name CONTAINS $station_name
+MATCH (se)-[:LINKS*1..3]-(e:Pathway:Escalator)
+RETURN DISTINCT
+  s.name          AS station,
+  e.id            AS escalator_id,
+  se.name         AS entrance_name
+ORDER BY e.id;
+
+// ── Q8: Elevator reachable from station entrances (LINKS traversal) ──────
+// "Is the elevator at Gallery Place working right now?"
+// "Any elevator issues at Gallery Place?"
+// Same LINKS traversal as Q7 but for Elevator nodes.
+// Returns the elevator ID and entrance name — then check OutageEvent via AFFECTS.
+MATCH (s:Station)-[:CONTAINS]->(se:StationEntrance)
+WHERE s.name CONTAINS $station_name
+MATCH (se)-[:LINKS*1..3]-(e:Pathway:Elevator)
+OPTIONAL MATCH (o:OutageEvent {status: 'active'})-[:AFFECTS]->(e)
+RETURN DISTINCT
+  s.name          AS station,
+  e.id            AS elevator_id,
+  se.name         AS entrance_name,
+  o.unit_name     AS outage_unit,
+  o.status        AS outage_status,
+  o.symptom_description AS symptom
+ORDER BY e.id;

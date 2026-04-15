@@ -21,9 +21,10 @@
     RETURN count(i) AS skipped_trips, d.date AS date
 
     '
-  ground_truth: A correct answer must state that 9 Yellow Line trips were skipped most recently, with
-    this data from April 7, 2026. The answer should not speculate about reasons for the skipped trips
-    or make claims about trends without additional data support.
+  ground_truth: A correct answer must state that 27 Yellow Line trips were skipped most recently, based
+    on the data from April 15, 2026. The answer should include this exact numerical count and may reference
+    the date as context for what "most recently" means. The answer must not speculate about reasons for
+    the skipped trips or provide information beyond what is present in the data.
   notes: Baseline precision test. Single anchor, implicit date. Yellow Line chosen because it has Skip
     data in the live graph. Should produce a single numeric answer via Cypher.
 - id: hani_002
@@ -40,12 +41,14 @@
     \ d ORDER BY d.date DESC LIMIT 1\nMATCH (d)<-[:ON_DATE]-(i:Interruption:Skip)-[:AFFECTS_ROUTE]->(r:Route:Bus)\n\
     RETURN r.route_short_name AS route, r.route_long_name AS name,\n       count(i) AS skipped_trips,\
     \ d.date AS date\nORDER BY skipped_trips DESC\nLIMIT 10\n"
-  ground_truth: A correct answer must identify the bus routes near Metro Center that had skipped trips
-    on April 9, 2026, ranked by frequency of skipped trips. The top three routes by skipped trips are
-    C81 (Military Rd) with 378 skipped trips, C37 (Lincoln Hts-Potomac Av) with 308 skipped trips, and
-    D94 (Gallery Place-Sibley Hospital) with 294 skipped trips. A correct answer should present these
-    routes in order of skipped trip frequency and may include additional routes from the list. The answer
-    must not speculate about causes for the skipped trips or make claims beyond the data provided.
+  ground_truth: 'As of April 15, 2026, the bus routes near Metro Center with the most recently recorded
+    skipped trips are, in descending order: C81 (Military Rd) with 460 skipped trips, D96 (Massachusetts
+    Av-Bethesda) with 402 skipped trips, C37 (Lincoln Hts-Potomac Av) and D94 (Gallery Place-Sibley Hospital)
+    each with 351 skipped trips, C91 (LeDroit Park-Georgetown) with 240 skipped trips, C41 (Bladensburg
+    Rd) with 118 skipped trips, D40 (7 St-Georgia Av) with 111 skipped trips, M70 (East West Hwy) with
+    106 skipped trips, D10 (Pennsylvania Av) with 85 skipped trips, and A49 (Columbia Pike-Metro Center)
+    with 51 skipped trips. A correct answer must include the specific routes and their exact skipped trip
+    counts, and should rank them by frequency of skipped trips from highest to lowest.'
   notes: Tests disruption summary for a station anchor. Bus trip joins confirmed via AFFECTS_ROUTE. Simplified
     from transfer partner traversal because bus trips use BusStop not Platform, making platform-level
     partner joins unavailable.
@@ -63,12 +66,11 @@
     \ Place'\nOPTIONAL MATCH (o:OutageEvent)-[:AFFECTS]->(e)\nRETURN s.name AS station, e.id AS elevator_id,\n\
     \       e.from_stop_desc AS from_desc, e.to_stop_desc AS to_desc,\n       o.unit_name AS outage_unit,\
     \ o.status AS status,\n       o.estimated_return AS eta\nORDER BY o.date_updated DESC\n"
-  ground_truth: 'A correct answer must acknowledge that the oracle data does not provide sufficient information
-    to determine whether the elevators at Gallery Place are currently working. All status, outage, and
-    ETA fields are null for all three elevators at the station (IDs: B01_F01_119167, B01_F01_119143, and
-    B01_F01_119138), meaning their operational status cannot be determined from the available data. A
-    correct answer should not speculate about functionality or assume any elevator is working or broken
-    based on missing information.'
+  ground_truth: Gallery Place has three elevators. Two of them (B01_F01_119167 and B01_F01_119143, which
+    operate between the Lower Mezzanine and Platform) are operational with no reported issues. The third
+    elevator (B01_F01_119138, which operates between Street and Platform) had a previous outage that has
+    been resolved and is now operational. A correct answer must convey that the elevators at Gallery Place
+    are working.
   notes: Most common real-world accessibility question. Tests OutageEvent retrieval via AFFECTS → Pathway:Elevator
     joined through Station CONTAINS.
 - id: hani_004
@@ -84,13 +86,12 @@
   oracle_cypher: "MATCH (i:Interruption:Delay)-[:AFFECTS_ROUTE]->(r:Route:Bus)\nWHERE r.route_short_name\
     \ = 'D80'\nRETURN i.interruption_id AS delay_id, i.severity AS severity,\n       i.start_time AS started,\
     \ i.description AS description\nORDER BY i.start_time DESC\nLIMIT 10\n"
-  ground_truth: Yes, there are currently active delays on the Wisconsin Ave bus corridor. The oracle data
-    shows 10 active transit delays across multiple trips, including 2 delays with SEVERE severity (Trip
-    33252040 delayed 932 seconds and Trip 14073020 delayed 2674 seconds) and 8 delays with WARNING severity,
-    with individual trip delays ranging from 349 to 932 seconds. A correct answer must acknowledge that
-    delays are present and can reference the number of delays and severity levels, but should not speculate
-    about causes or provide delay information for trips that are not part of the Wisconsin Ave corridor
-    without verification.
+  ground_truth: Yes, there are active delays on the Wisconsin Ave bus corridor. The data shows 10 active
+    delay incidents, all with WARNING severity. Six trips (11215080, 33671080, 9192080, 14636080, 3037080,
+    and 2022080) have recent delays ranging from 332 to 713 seconds, while four additional trips (11440080,
+    26065080, 22420080, and 30647080) show delays ranging from 310 to 676 seconds. A correct answer must
+    acknowledge the presence of these delays and may include the specific trip IDs and delay durations
+    if providing detailed information.
   notes: Delay query on the D80 (Wisconsin Av-Union Station) — highest-delay bus route in current data.
     No rail delays exist in live graph. Tests AFFECTS_ROUTE traversal.
 - id: hani_005
@@ -107,12 +108,12 @@
     \      -[:FOLLOWS]->(rp:RoutePattern)-[:BELONGS_TO]->(r:Route)\nRETURN i.severity AS severity, r.route_short_name\
     \ AS route,\n       count(DISTINCT t) AS affected_trips, d.date AS date\nORDER BY affected_trips DESC\n\
     LIMIT 10\n"
-  ground_truth: A correct answer must identify that the most recent bus delays occurred on April 8, 2026,
-    and specify that route D40 was the most severely affected with 7 delayed trips, followed by routes
-    C53 and D80 each with 5 affected trips. The answer should convey that all reported delays carry a
-    WARNING severity level. A correct answer should not speculate about the causes of these delays or
-    provide information beyond the dates, route numbers, affected trip counts, and severity classifications
-    present in the verified data.
+  ground_truth: The most recent bus trip delays occurred on April 15, 2026, affecting 10 routes with WARNING
+    severity levels. Routes D80 and D10 were most severely impacted with 6 affected trips each, followed
+    by routes D20, F20, C51, and C53 with 4 affected trips each, and routes M44, F1X, D96, and D60 with
+    3 affected trips each, for a total of 40 affected trips across all listed routes. A correct answer
+    must specify these exact route names, trip counts, and the April 15, 2026 date, and must characterize
+    the severity as WARNING level delays rather than using vague severity descriptors.
   notes: No-anchor delay summary. Tests AFFECTS_TRIP deep traversal through Trip → RoutePattern → Route.
     Provenance path (SOURCED_FROM) also exercised by narration agent.
 - id: hani_006
@@ -130,11 +131,11 @@
     \ AS escalator_id,\n       e.from_stop_desc AS from_desc, e.to_stop_desc AS to_desc,\n       sl.level_name\
     \ AS from_level, sl.level_index AS from_index,\n       el.level_name AS to_level,   el.level_index\
     \ AS to_index\nORDER BY sl.level_index\n"
-  ground_truth: A correct answer must clarify that the query results do not show escalators connecting
-    street level to platform level at Pentagon City. Instead, the data shows six escalators (C08_137144,
-    C08_137135, C08_137141, C08_137138, C08_137132, and C08_137129) that connect the mezzanine level to
-    the platform level. A correct answer should not claim that any of these escalators reach street level,
-    as the oracle data contains no information about street-level connections.
+  ground_truth: No escalators at Pentagon City connect the street level directly to the platform level.
+    The data shows 6 escalators (C08_137144, C08_137135, C08_137141, C08_137138, C08_137132, and C08_137129)
+    at this station, but all of them connect between the Mezzanine level and the Platform level only.
+    A correct answer must clarify that there are no street-to-platform escalators in the provided data
+    and should not imply the existence of such connections.
   notes: Tests level-aware traversal. Requires STARTING_LEVEL and ENDING_LEVEL resolution. Validates level_index
     is used correctly (0=street, negative=underground).
 - id: hani_007
@@ -147,21 +148,20 @@
   hop_depth: shallow
   temporal: implicit
   category: edge_case
-  oracle_cypher: 'MATCH (s:Station)
+  oracle_cypher: 'MATCH (s:Station) WHERE s.name CONTAINS ''Washington''
 
-    WHERE s.name CONTAINS ''Washington''
+    OPTIONAL MATCH (i:Interruption)-[:AFFECTS_ROUTE]->(r:Route)-[:SERVES]->(s)
 
-    RETURN s.name AS station, s.id AS station_id
+    RETURN s.name AS station, s.id AS station_id, count(DISTINCT i) AS disruption_count
 
     ORDER BY s.name
 
     '
-  ground_truth: 'A correct answer must identify that there are disruptions at two Washington airports:
-    Ronald Reagan Washington National Airport and Washington Dulles International Airport. The answer
-    should reference these specific airport names or their common abbreviations (DCA and IAD respectively).
-    A correct answer must not speculate about the nature, cause, duration, or severity of these disruptions,
-    as the query result provides only the affected stations without additional contextual information
-    about what the disruptions entail.'
+  ground_truth: 'A correct answer must identify the two Washington-area stations with disruptions: Ronald
+    Reagan Washington National Airport with 387 disruptions and Washington Dulles International Airport
+    with 57 disruptions. The answer should convey the exact disruption counts for each station without
+    rounding or approximation. The answer must not conflate these as a single entity or combine their
+    disruption counts, as they are separate stations with distinct disruption records.'
   notes: Ambiguous anchor — 'Washington' could match multiple stations. Oracle reveals what candidates
     exist. The system must not silently return results for the wrong station.
 - id: hani_008
@@ -187,11 +187,10 @@
     RETURN r.route_long_name AS route, count(DISTINCT i) AS skipped_services, d.date AS date
 
     '
-  ground_truth: A correct answer must state that Orange Line trips have been skipped recently, specifically
-    indicating that 3 services were skipped on the Orange Line route as of April 1, 2026. The answer should
-    identify the Orange Line as the affected route. A correct answer must not speculate about reasons
-    for the skipped services or provide information about other transit lines not mentioned in the verified
-    data.
+  ground_truth: A correct answer must state that 3 Orange Line trips were skipped on April 14, 2026. The
+    answer should clearly identify the Orange Line as the affected route and provide the exact count of
+    3 skipped services. The answer must not speculate about causes or identify additional routes as affected,
+    since the provided data contains information only for the Orange Line.
   notes: Rail skip question. Orange Line chosen because it has Skip data. Tests AFFECTS_TRIP → Trip →
     RoutePattern → Route traversal for rail. Multi-part phrasing tests narration synthesis.
 - id: hani_009
@@ -225,10 +224,10 @@
     OPTIONAL MATCH (o:OutageEvent)-[:AFFECTS]->(e)\nOPTIONAL MATCH (i:Interruption)-[:AFFECTS_ROUTE]->(r:Route)-[:SERVES]->(s)\n\
     RETURN s.name AS station,\n       count(DISTINCT o) AS active_outages,\n       count(DISTINCT i) AS\
     \ route_disruptions\n"
-  ground_truth: A correct answer must state that there are currently no active elevator outages at Metro
-    Center station. The answer must also convey that there are five active route disruptions at the station.
-    A correct answer should address both parts of the question—elevator outages and service disruptions—while
-    keeping these as separate facts and not implying any connection between them.
+  ground_truth: A correct answer must state that there is 1 active elevator outage at Metro Center and
+    that there were 324 service disruptions on routes at the same station recently. The answer should
+    report these two facts as separate issues without implying a causal relationship between the elevator
+    outage and the route disruptions.
   notes: 'Stress-tests the schema gap: OutageEvent (WMATA Incidents API) and Interruption (GTFS-RT) are
     separate sources with no direct link. The LLM must present both independently without implying causation.'
 - id: hani_011
@@ -255,10 +254,10 @@
     RETURN count(i) AS skipped_trips, d.date AS date
 
     '
-  ground_truth: A correct answer must state that 9 Yellow Line trips were skipped most recently, with
-    this data corresponding to April 7, 2026. The answer should clearly convey the specific count of skipped
-    trips and may reference the date if relevant to the response. The answer must not speculate about
-    reasons for the skipped trips or make claims about causation without supporting evidence.
+  ground_truth: A correct answer must state that 27 Yellow Line trips were skipped most recently, with
+    this data dated April 15, 2026. The answer should convey the exact numerical count without rounding
+    or approximation. The answer must not speculate about reasons for the skipped trips or provide information
+    beyond what is explicitly stated in the data.
   notes: Typo noise variant of hani_001. Tests AnchorResolver fuzzy matching — "Yello Line" must be resolved
     to Yellow Line (route_short_name Y) without human correction.
 - id: hani_012
@@ -276,12 +275,10 @@
     \ Place'\nOPTIONAL MATCH (o:OutageEvent)-[:AFFECTS]->(e)\nRETURN s.name AS station, e.id AS elevator_id,\n\
     \       e.from_stop_desc AS from_desc, e.to_stop_desc AS to_desc,\n       o.unit_name AS outage_unit,\
     \ o.status AS status,\n       o.estimated_return AS eta\nORDER BY o.date_updated DESC\n"
-  ground_truth: A correct answer must acknowledge that the query returned elevator information for Gallery
-    Place station, but the oracle data does not contain status information that would allow a definitive
-    answer about whether the elevators are currently working. The three elevators listed (B01_F01_119167,
-    B01_F01_119143, and B01_F01_119138) all have null values for status, outage_unit, and eta fields,
-    meaning the real-time operational status cannot be determined from the available data. A correct response
-    should not speculate about whether the elevators are working or provide made-up status information.
+  ground_truth: Gallery Place station has 3 elevators. Two elevators (B01_F01_119167 and B01_F01_119143)
+    between the Lower Mezzanine and Platform are currently operational with no reported issues. One elevator
+    (B01_F01_119138) between Street and Platform has a resolved outage status. A correct answer must confirm
+    that the elevators at Gallery Place are working and operational.
   notes: Colloquial + typo noise variant of hani_003. "Galery Place" (missing l) + "rn" (right now) tests
     both AnchorResolver fuzzy matching and narration agent handling of informal register.
 - id: hani_013
@@ -303,10 +300,11 @@
     LIMIT 5
 
     '
-  ground_truth: 'A correct answer must indicate that there are currently bus delays affecting downtown
-    routes, and should specify the five routes experiencing delays: D80 (31 minutes), C53 (28 minutes),
-    D40 (21 minutes), C21 (20 minutes), and D20 (20 minutes). The answer should present these as current
-    active delays without speculating about causes or providing information beyond what the data shows.'
+  ground_truth: 'A correct answer must specify that there are currently bus delays affecting five downtown
+    routes: D80 with 321 active delays, F20 with 282 active delays, C53 with 270 active delays, D40 with
+    249 active delays, and D20 with 228 active delays. The answer should convey that delays are occurring
+    across multiple routes with these exact delay counts and should not speculate about causes or severity
+    beyond what the data indicates.'
   notes: Under-specified anchor noise variant of hani_004. "Downtown" is not a resolvable WMATA station
     or route name. Tests whether the system fails gracefully, asks for clarification, or hallucinates
     a location anchor. No specific station is resolvable from this query.

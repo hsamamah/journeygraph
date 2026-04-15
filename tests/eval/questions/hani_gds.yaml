@@ -11,14 +11,13 @@
     \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.pageRank.stream(graphName)\nYIELD nodeId,\
     \ score\nWITH gds.util.asNode(nodeId) AS node, score\nWHERE node:Station\nRETURN node.name AS station_name,\
     \ node.id AS station_id, round(score, 4) AS pagerank_score\nORDER BY pagerank_score DESC\nLIMIT 10\n"
-  ground_truth: A correct answer must identify L'Enfant Plaza and Metro Center as the two most important
-    transfer hubs on the WMATA network, with L'Enfant Plaza having the highest PageRank score of 1.2525
-    and Metro Center second at 1.1136. The answer should acknowledge that Fort Totten and Gallery Place
-    are the next tier of important hubs with equal scores of 0.9666, followed by a group of six stations
-    (Rosslyn, Federal Triangle, Smithsonian, McPherson Square, Farragut West, and Foggy Bottom-GWU) all
-    sharing a PageRank score of 0.7747. A correct answer must not suggest causation for why these stations
-    are important hubs but may explain that importance is measured by network connectivity and transfer
-    frequency as reflected in the PageRank algorithm.
+  ground_truth: A correct answer must identify the most important transfer hubs on the WMATA metro network
+    based on the provided PageRank scores, with L'Enfant Plaza (score 1.2525) and Metro Center (score
+    1.1136) ranking as the top two most important hubs, followed by Fort Totten and Gallery Place (both
+    at 0.9666). The answer should acknowledge that these rankings are determined by PageRank centrality
+    scores, which measure network importance based on transfer connectivity. A correct answer must not
+    speculate about stations beyond the 10 listed in the data or assign importance based on factors other
+    than the provided PageRank scores.
   notes: 'Baseline GDS happy path. Tests that the Planner sets use_gds=true for centrality questions and
     that QueryWriter injects GDS few-shot examples. PageRank on the Route-Station bipartite graph (Station
     and Route nodes connected by SERVES) reveals the most connected interchange stations (L''Enfant Plaza,
@@ -42,13 +41,11 @@
     \ {id: 'STN_C08'})\nCALL gds.shortestPath.dijkstra.stream(graphName, {sourceNode: source, targetNode:\
     \ target})\nYIELD nodeIds, totalCost\nRETURN\n    [nodeId IN nodeIds | gds.util.asNode(nodeId).name]\
     \ AS path_nodes,\n    toInteger(totalCost) AS hop_count\nORDER BY hop_count ASC\nLIMIT 1\n"
-  ground_truth: '# Ground Truth Statement
-
-
-    The shortest path between Metro Center and Pentagon City consists of 2 hops. While the oracle query
-    result contains a null value for the intermediate node name, a correct answer must accurately convey
-    that these two stations are connected by exactly 2 hops. A correct answer should not speculate about
-    or name the intermediate station if that information is not definitively known.'
+  ground_truth: The shortest path between Metro Center and Pentagon City consists of 2 hops, connecting
+    these two stations directly with one intermediate station between them. A correct answer must specify
+    the hop count as exactly 2 and identify Metro Center and Pentagon City as the origin and destination
+    points. The data contains a null value for the intermediate station name, so a correct answer must
+    not fabricate or assume the identity of the middle station.
   notes: 'Multi-anchor GDS path finding. Tests anchor resolver for two stations and Dijkstra shortest
     path via the Route-Station bipartite graph. Metro Center (STN_A01_C01) to Pentagon City (STN_C08)
     path traverses through the Blue/Yellow route node. The path_nodes list includes intermediate Route
@@ -70,13 +67,12 @@
     \ score\nWITH gds.util.asNode(nodeId) AS node, score\nWHERE node:Station\nRETURN node.name AS station_name,\
     \ round(score, 2) AS betweenness_score\nORDER BY betweenness_score DESC\nLIMIT 10\n"
   ground_truth: A correct answer must identify Metro Center and L'Enfant Plaza as the two biggest choke
-    points on the Washington DC metro network, with Metro Center having the highest betweenness score
-    of 1263.18 and L'Enfant Plaza the second highest at 943.93. The answer should explain that betweenness
-    scores measure how many shortest paths between station pairs pass through a given station, making
-    high-scoring stations critical to network connectivity. A correct answer may also mention Fort Totten
-    and Gallery Place as secondary chokepoints with notably lower but still significant scores of 350.28,
-    but must not suggest that stations with low betweenness scores (such as those scoring 27.7) are major
-    choke points.
+    points on the metro network, with Metro Center having a betweenness score of 1263.18 and L'Enfant
+    Plaza having a betweenness score of 943.93. The answer should explain that these stations have significantly
+    higher betweenness centrality scores than other stations, meaning that closing either would disrupt
+    the most routes across the network. A correct answer may also note that Fort Totten and Gallery Place
+    are secondary choke points with matching scores of 350.28, but the primary focus should be on Metro
+    Center and L'Enfant Plaza as the most critical stations.
   notes: 'Betweenness centrality — tests the most transit-relevant GDS algorithm for WMATA. High betweenness
     stations are critical single points of failure on the network. Question phrasing ("cut off") is natural
     but implies betweenness, not PageRank. Tests Planner''s ability to distinguish betweenness from degree/PageRank
@@ -97,14 +93,18 @@
     \ communityId\nWITH communityId, collect(gds.util.asNode(nodeId)) AS nodes\nWITH communityId,\n  \
     \   [n IN nodes WHERE n:Station | n.name] AS stations\nWHERE size(stations) > 0\nRETURN communityId,\
     \ size(stations) AS station_count, stations\nORDER BY station_count DESC\n"
-  ground_truth: 'A correct answer must identify four natural clusters of WMATA stations discovered through
-    network analysis: Community 227 containing 36 stations (including Metro Center, Rosslyn, and extending
-    to Ashburn), Community 228 containing 24 stations (including Farragut North, Dupont Circle, and Shady
-    Grove), Community 226 containing 23 stations (including Gallery Place, L''Enfant Plaza, and Branch
-    Av), and Community 225 containing 15 stations (including Arlington Cemetery, Pentagon, and Franconia-Springfield).
-    The answer should recognize that these clusters represent natural groupings based on network topology
-    and connectivity patterns within the WMATA system, without making unsupported claims about the reasons
-    for clustering beyond the graph structure itself.'
+  ground_truth: A correct answer must identify and describe four distinct station clusters on the WMATA
+    network, each representing a natural grouping of stations based on their connectivity and geographic
+    proximity. The first cluster (Community 227) contains 36 stations spanning from central Washington
+    locations like Metro Center and Federal Triangle through Arlington and Alexandria stations to the
+    Dulles corridor, including Vienna, Tysons, Reston Town Center, Herndon, Washington Dulles International
+    Airport, Loudoun Gateway, and Ashburn. The second cluster (Community 228) contains 24 stations running
+    from Farragut North through downtown and the Red Line corridor, including Dupont Circle, Bethesda,
+    Rockville, Shady Grove, and extending east through Union Station to Silver Spring, Wheaton, and Glenmont.
+    The third cluster (Community 226) contains 23 stations encompassing Gallery Place, the U Street corridor,
+    the Green Line through College Park and Greenbelt, and the Blue/Silver Line extension through Waterfront,
+    Navy Yard, and Anacostia to Branch Avenue. The fourth cluster (Community 225) contains 15 stations
+    primarily along the Blue and Yellow Lines in the Arlington and
   notes: 'Community detection via Louvain. Tests that QueryWriter generates multi-YIELD GDS queries correctly
     and that the narration agent describes cluster membership in plain language rather than raw community
     IDs. Expected to reveal corridor-aligned clusters (Blue/Orange/Silver corridor, Red Line corridor,
@@ -126,10 +126,13 @@
     WITH componentId, collect(gds.util.asNode(nodeId)) AS nodes\nWITH componentId,\n     [n IN nodes WHERE\
     \ n:Station | n.name] AS stations\nWHERE size(stations) > 0\nRETURN componentId, size(stations) AS\
     \ station_count, stations\nORDER BY station_count DESC\n"
-  ground_truth: A correct answer must state that there are no isolated stations on the WMATA network.
-    The query results show a single connected component containing all 98 stations in the system, meaning
-    every station is reachable from every other station through the network's rail connections. A correct
-    answer should not imply that any stations are disconnected or form separate network clusters.
+  ground_truth: '# Ground Truth Statement
+
+
+    There are no stations on the WMATA network that are completely isolated or unreachable from the main
+    network. All 98 stations listed in the data belong to a single connected component, indicating that
+    every station on the network is reachable from every other station. A correct answer must confirm
+    that station isolation does not exist on the WMATA network based on the connectivity data provided.'
   notes: 'WCC edge case — tests whether isolated stations exist in the Route-Station graph. All 98 WMATA
     stations are served by at least one rail route, so the main component should include all stations
     and the answer should state the network is fully connected. Tests narration agent handling of graph
@@ -151,13 +154,11 @@
     \ gds.bfs.stream(graphName, {sourceNode: source, maxDepth: 2})\nYIELD path\nUNWIND nodes(path) AS\
     \ n\nWITH DISTINCT n\nWHERE n:Station AND n.id <> 'STN_D03_F03'\nRETURN n.name AS reachable_station,\
     \ n.id AS station_id\nORDER BY reachable_station\n"
-  ground_truth: A correct answer must identify that there are at least 20 stations reachable from L'Enfant
-    Plaza within 2 transfers, including specific stations such as Addison Rd, Anacostia, Archives, Arlington
-    Cemetery, Ashburn, Ballston-MU, Benning Rd, Braddock Rd, Branch Av, Capitol Heights, Capitol South,
-    Cheverly, Clarendon, College Park-U of Md, Columbia Heights, Congress Heights, Court House, Crystal
-    City, Deanwood, and Downtown Largo. The answer should accurately represent that these stations can
-    be reached with a maximum of two transfers from L'Enfant Plaza and must not claim that additional
-    stations beyond those verified in the oracle data are reachable within this constraint.
+  ground_truth: 'From L''Enfant Plaza, there are 20 stations reachable within 2 transfers: Addison Rd,
+    Anacostia, Archives, Arlington Cemetery, Ashburn, Ballston-MU, Benning Rd, Braddock Rd, Branch Av,
+    Capitol Heights, Capitol South, Cheverly, Clarendon, College Park-U of Md, Columbia Heights, Congress
+    Heights, Court House, Crystal City, Deanwood, and Downtown Largo. A correct answer must list these
+    20 specific stations and must not omit any of them, though the order of presentation may vary.'
   notes: 'BFS reachability from L''Enfant Plaza (STN_D03_F03 — major interchange: Blue/Orange/Silver/Yellow/Green).
     Tests anchor injection into a GDS sourceNode parameter. maxDepth:2 in the bipartite graph means: Station
     -> Route -> Station, reaching all stations on any line that serves L''Enfant Plaza. L''Enfant Plaza
@@ -178,12 +179,11 @@
     \ orientation: 'UNDIRECTED'}})\nYIELD graphName\nCALL gds.degree.stream(graphName)\nYIELD nodeId,\
     \ score\nWITH gds.util.asNode(nodeId) AS node, score\nWHERE node:Station\nRETURN node.name AS station_name,\
     \ toInteger(score) AS route_count\nORDER BY route_count DESC\nLIMIT 10\n"
-  ground_truth: A correct answer must identify L'Enfant Plaza as the station with the most direct connections,
-    having 5 routes, and should note that Metro Center is the second-most connected with 4 routes. The
-    answer should either list or acknowledge the group of stations tied with 3 routes each (Smithsonian,
-    Farragut West, Rosslyn, Federal Triangle, Gallery Place, Fort Totten, McPherson Sq, and Foggy Bottom-GWU),
-    or at minimum indicate that multiple stations share the third-highest connection count. The answer
-    must not misrepresent the connection counts or incorrectly rank the stations.
+  ground_truth: L'Enfant Plaza has the most direct connections to other stations with 5 routes, followed
+    by Metro Center with 4 routes. A correct answer must identify L'Enfant Plaza as the station with the
+    highest number of direct connections and may optionally note that Metro Center ranks second. The answer
+    should not speculate about reasons for these connection counts or imply causal relationships beyond
+    what the data shows.
   notes: 'Degree centrality — simpler than PageRank, tests Planner routing to degree algorithm vs PageRank
     for a "most connections" phrasing. In the Route-Station bipartite graph, degree of a Station is the
     number of rail routes that serve it. Expected to differ from PageRank ranking. Validates that the
@@ -207,12 +207,12 @@
     \ AS idx\nWITH ranked[idx] AS entry, idx+1 AS position, size(ranked) AS total\nWHERE entry.name =\
     \ 'Metro Center'\nRETURN entry.name AS station_name, round(entry.score, 2) AS betweenness_score,\n\
     \       position AS rank_position, total AS total_stations\n"
-  ground_truth: A correct answer must state that Metro Center is the most structurally central station
-    on the network, ranking first out of 98 total stations with a betweenness centrality score of 1263.18.
-    The answer should convey that this high betweenness score indicates Metro Center lies on more shortest
-    paths between other station pairs than any other station on the network. The answer must not speculate
-    about reasons for this centrality or make claims about passenger volume, ridership, or other factors
-    not directly related to network topology.
+  ground_truth: Metro Center is the most structurally central station on the network, ranking first among
+    all 98 stations with a betweenness centrality score of 1263.18. A correct answer must explicitly state
+    this top ranking and may include the specific betweenness score to demonstrate Metro Center's dominant
+    position in network connectivity. The answer should not speculate about why Metro Center holds this
+    position or make claims about its operational importance beyond what the structural centrality metric
+    indicates.
   notes: 'Anchor-specific centrality query — tests that the pipeline can answer a comparison question
     about a specific station''s graph rank. Requires the LLM to generate a ranking subquery that filters
     down to the anchored station. Oracle returns Metro Center''s betweenness rank and total station count
@@ -236,11 +236,14 @@
     \ target})\nYIELD nodeIds, totalCost\nRETURN\n    source.name AS origin,\n    target.name AS destination,\n\
     \    [nodeId IN nodeIds | gds.util.asNode(nodeId).name] AS path_nodes,\n    toInteger(totalCost) AS\
     \ hop_count\nORDER BY hop_count ASC\nLIMIT 1\n"
-  ground_truth: A correct answer must identify that the fastest route from Shady Grove to Branch Ave requires
-    4 hops and passes through Fort Totten as an intermediate station. The answer should note that this
-    represents the shortest path between these two stations on the transit network. The oracle data contains
-    null values for some intermediate nodes, indicating incomplete station name information in those positions,
-    which a correct answer need not resolve or speculate about.
+  ground_truth: '# Ground Truth Statement
+
+
+    The fastest route from Shady Grove to Branch Avenue requires 4 hops and passes through Fort Totten
+    as an intermediate station. A correct answer must specify these exact details: the origin (Shady Grove),
+    destination (Branch Avenue), the total hop count of 4, and identify Fort Totten as a transfer or intermediate
+    point on this path. The answer must not speculate about alternative routes, travel times in minutes,
+    or service status, as only this single route option is provided in the data.'
   notes: 'End-to-end path query with two distant terminus stations. Shady Grove (STN_A15, Red Line end)
     to Branch Av (STN_F11, Green Line end) requires at least two route hops (transfer at Fort Totten in
     the bipartite graph). Tests multi-anchor resolution for stations at opposite ends of the network and
@@ -263,9 +266,11 @@
     \    count(DISTINCT e)        AS total_elevators,\n    count(DISTINCT o)        AS active_outages,\n\
     \    collect(DISTINCT e.id)   AS elevator_ids\n"
   ground_truth: A correct answer must state that there are 3 accessible elevator routes connecting street
-    level to the platform at Metro Center station, and must clearly indicate that none of these elevators
-    are currently out of service. The answer should convey that all three elevators (identified as A01_C01_104115,
-    A01_C01_104126, and A01_C01_104146) are operational.
+    level to the platform at Metro Center, and that 1 of these elevators is currently out of service.
+    The answer should include the specific elevator IDs (A01_C01_104115, A01_C01_104126, and A01_C01_104146)
+    or at minimum clearly convey the count of 3 total elevators with 1 active outage. The answer must
+    not speculate about which specific elevator is out of service, as the data does not identify which
+    of the three is affected.
   notes: 'Cross-domain edge case combining accessibility data with a count query. Does NOT use GDS — tests
     that the Planner correctly routes to standard Cypher (accessibility domain) rather than GDS for an
     elevator count question. This question is in hani_gds.yaml as a negative control: a question about

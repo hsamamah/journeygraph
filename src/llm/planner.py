@@ -90,8 +90,12 @@ domain: "transfer_impact" | "delay_propagation" | "accessibility" | null
   Set null if the query is not about WMATA transit disruptions, accessibility, or delays.
 
 path (set to null when domain is null):
-  "text2cypher" — specific counts, lookups, or binary yes/no questions
-  "subgraph"    — explanations, correlations, structural or topological questions
+  "text2cypher" — specific counts, lookups, binary yes/no questions, AND all graph algorithm
+                  queries (shortest path, centrality, clustering, reachability). When use_gds
+                  is true, always set path to "text2cypher".
+  "subgraph"    — explanations or correlations answered by traversing existing graph edges
+                  (e.g. "which routes serve this station", "what connects to X"). Do NOT use
+                  subgraph for algorithm-based questions (centrality, path-finding, clustering).
   "both"        — questions combining a precise numerical part with an explanatory part
 
 anchors (set to null when domain is null) — when provided, must have exactly these keys: {anchor_types}
@@ -117,14 +121,18 @@ use_gds: false (default — override only when the GDS section below is present 
 _GDS_PROMPT_ADDON = """
 
 Graph Data Science (GDS) is available on this database.
-Set use_gds: true when the query implies graph algorithm reasoning such as:
-  - Finding the shortest or fastest path between stations
-  - Ranking stations by centrality (most connected, most critical, most used as transfer hub)
-  - Detecting communities or clusters of stations/routes
-  - Measuring how similar stations are based on their connectivity patterns
-  - Identifying weakly or strongly connected components in the service graph
+Set use_gds: true AND path: "text2cypher" when the query implies graph algorithm reasoning such as:
+  - Finding the shortest or fastest path between stations (Dijkstra, BFS)
+  - Ranking stations by centrality (PageRank, betweenness, degree — "most important", "biggest choke point", "most direct connections")
+  - Detecting communities or clusters of stations/routes (Louvain)
+  - Identifying reachable stations within N transfers (BFS)
+  - Identifying weakly or strongly connected components / isolated stations (WCC)
 
-Do NOT set use_gds: true for plain lookups, counts, or filtering queries — those are answered with standard Cypher.\
+IMPORTANT: GDS questions are NEVER out-of-scope for WMATA. They ask about the transit network's
+graph structure. Always set domain: "transfer_impact" for GDS network questions.
+Always set path: "text2cypher" when use_gds: true — never "subgraph" or "both".
+
+Do NOT set use_gds: true for plain lookups, counts, or filtering queries — those use standard Cypher.\
 """
 
 # Corrective nudge appended to the prompt on a retry after JSON parse failure.

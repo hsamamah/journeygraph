@@ -168,6 +168,8 @@ def _execute(
     force_path: str | None,
     model: str,
     pricing: dict,
+    registry: Any,
+    llm_config: Any,
 ) -> dict:
     """
     Run a single question through the pipeline and return a result dict.
@@ -187,7 +189,10 @@ def _execute(
     from neo4j.exceptions import Neo4jError
 
     from src.llm.anchor_resolver import AnchorResolver
+    from src.llm.cypher_validator import validate_and_log_cypher
+    from src.llm.query_writer import run_query_writer
     from src.llm.subgraph_builder import SubgraphBuilder
+    from src.llm.text2cypher_output import Text2CypherOutput
 
     proc = psutil.Process()
     mem_before = proc.memory_info().rss
@@ -264,9 +269,57 @@ def _execute(
                 "run_harness | zero anchors resolved — proceeding to degraded narration"
             )
 
+        # Text2Cypher path
+        t2c_output = None
+        if planner_output.path in {"text2cypher", "both"}:
+            schema_slice = registry.get(planner_output.schema_slice_key)
+            _MAX_ATTEMPTS = 3
+            refinement_errors: list[str] = []
+            all_validation_notes: list[str] = []
+
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                qw_output = run_query_writer(
+                    question,
+                    planner_output,
+                    llm_config,
+                    schema_slice=schema_slice,
+                    resolved_anchors=resolutions.as_flat_dict(),
+                    refinement_errors=refinement_errors or None,
+                    use_gds=planner_output.use_gds,
+                )
+                val_result = validate_and_log_cypher(
+                    qw_output.cypher_query,
+                    schema_slice,
+                    schema_slice.property_registry,
+                    db.driver,
+                    log,
+                )
+                if val_result.valid:
+                    t2c_output = Text2CypherOutput(
+                        cypher=qw_output.cypher_query,
+                        results=val_result.results or [],
+                        domain=planner_output.domain,
+                        attempt_count=attempt,
+                        validation_notes=all_validation_notes,
+                        success=True,
+                    )
+                    break
+                all_validation_notes.extend(val_result.errors)
+                refinement_errors = val_result.errors
+            else:
+                t2c_output = Text2CypherOutput(
+                    cypher="",
+                    results=[],
+                    domain=planner_output.domain,
+                    attempt_count=_MAX_ATTEMPTS,
+                    validation_notes=all_validation_notes,
+                    success=False,
+                )
+
         # Subgraph path
         sub_output = None
         subgraph_failure: str | None = None
+
         if planner_output.path in {"subgraph", "both"}:
             builder = SubgraphBuilder(db=db)
             try:
@@ -283,7 +336,7 @@ def _execute(
             narration_output = narration_agent.run(
                 question,
                 planner_output,
-                t2c_output=None,
+                t2c_output=t2c_output,
                 subgraph_output=sub_output,
                 resolutions=resolutions,
             )
@@ -442,6 +495,8 @@ def run(
                         force_path=force_path,
                         model=llm_config.llm_model,
                         pricing=pricing,
+                        registry=registry,
+                        llm_config=llm_config,
                     )
                 except Exception as exc:
                     result = {

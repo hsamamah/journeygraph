@@ -466,7 +466,9 @@ class AnchorResolver:
 
         return [
             Candidate(
-                node_id=row["route_id"],
+                # Prefer route_short_name (e.g. 'O', 'Y') over route_id (e.g. 'ORANGE', 'YELLOW')
+                # so QueryWriter can inject it directly into WHERE r.route_short_name = $value.
+                node_id=row["short_name"] or row["route_id"],
                 display_name=row["short_name"] or row["long_name"],
                 score=row["score"],
                 element_id=row["element_id"],

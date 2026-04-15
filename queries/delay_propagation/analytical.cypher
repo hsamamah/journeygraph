@@ -120,12 +120,30 @@ RETURN
 ORDER BY tu.delay DESC
 LIMIT 20;
 
-// ── Q7: Stations with matching name — ambiguous anchor disambiguation ────
-// "What disruptions are there at Washington?" — name matches multiple stations.
-// Returns candidate stations so narration can surface the ambiguity.
+// ── Q7: Disruption count at a station — ambiguous or named anchor ────────
+// "What disruptions are there at Washington?" / "disruptions at Reagan National?"
+// ALWAYS use AFFECTS_ROUTE → Route → SERVES → Station — NOT AFFECTS_TRIP → Platform.
+// AFFECTS_TRIP and SCHEDULED_AT → Platform are trip-level only, not station-level.
+// name CONTAINS handles ambiguous anchors: returns one row per matching station.
 MATCH (s:Station)
 WHERE s.name CONTAINS $station_name
+OPTIONAL MATCH (i:Interruption)-[:AFFECTS_ROUTE]->(r:Route)-[:SERVES]->(s)
 RETURN
-  s.name        AS station,
-  s.id          AS station_id
+  s.name                  AS station,
+  s.id                    AS station_id,
+  count(DISTINCT i)       AS disruption_count
 ORDER BY s.name;
+
+// ── Q8: Active delays on a route — no date filter (vague/implicit temporal) ─
+// "d80 bus delays idk maybe today" / "any delays on D80 right now?"
+// When no date anchor is resolved, NEVER invent or hardcode a date.
+// Query active Interruption:Delay nodes directly — they represent live data.
+MATCH (i:Interruption:Delay)-[:AFFECTS_ROUTE]->(r:Route:Bus)
+WHERE r.route_short_name = $route_short_name
+RETURN
+  i.interruption_id  AS delay_id,
+  i.severity         AS severity,
+  i.start_time       AS started,
+  i.description      AS description
+ORDER BY i.start_time DESC
+LIMIT 10;

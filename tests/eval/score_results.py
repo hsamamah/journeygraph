@@ -99,10 +99,15 @@ def _score_one(
         )
         raw = response.content[0].text.strip()
         # Strip markdown code fences if present
-        if raw.startswith("```"):
+        if "```" in raw:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
+        # Extract the first complete JSON object in case the model adds trailing prose
+        brace_start = raw.find("{")
+        brace_end = raw.rfind("}") + 1
+        if brace_start != -1 and brace_end > brace_start:
+            raw = raw[brace_start:brace_end]
         parsed = json.loads(raw)
         return {
             "faithfulness": float(parsed.get("faithfulness", 0.0)),
@@ -224,10 +229,14 @@ def main() -> None:
             by_hop[hop][bucket] += 1
             by_category[cat][bucket] += 1
 
+            composite_score = round(
+                (scores["faithfulness"] + scores["answer_relevance"]) / 2, 3
+            )
             scored_row = {
                 **row,
                 "faithfulness": scores["faithfulness"],
                 "answer_relevance": scores["answer_relevance"],
+                "score": composite_score,
                 "passed": passed_check,
                 "score_reasoning": scores["score_reasoning"],
             }

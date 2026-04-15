@@ -20,11 +20,12 @@ with confirmed LLM-generated prose statements.
 """
 
 import argparse
+from collections import defaultdict
 import json
+from pathlib import Path
+import re
 import sys
 import textwrap
-from collections import defaultdict
-from pathlib import Path
 
 import yaml
 
@@ -56,8 +57,28 @@ def is_adversarial(q: dict) -> bool:
     return q.get("category") == "adversarial" or not q.get("oracle_cypher", "").strip()
 
 
+def _gds_graph_name(cypher: str) -> str | None:
+    """Return the GDS named-graph name if the Cypher projects one, else None."""
+    m = re.search(r"gds\.graph\.project\(\s*['\"]([^'\"]+)['\"]", cypher)
+    return m.group(1) if m else None
+
+
 def run_oracle(cypher: str, db) -> list[dict]:
-    return db.query(cypher)
+    graph_name = _gds_graph_name(cypher)
+    if graph_name:
+        try:
+            db.query(f"CALL gds.graph.drop('{graph_name}', false)")
+        except Exception:
+            pass
+
+    try:
+        return db.query(cypher)
+    finally:
+        if graph_name:
+            try:
+                db.query(f"CALL gds.graph.drop('{graph_name}', false)")
+            except Exception:
+                pass  # graph may not have been created if the query failed early
 
 
 def format_result(rows: list[dict]) -> str:
@@ -77,12 +98,26 @@ def ground_truth_from_rows(rows: list[dict], question: str, client, model: str) 
     answer using: "Here is the question, here is the proposed answer, here is
     the ground truth — does the proposed answer satisfy the ground truth?"
     """
+
+    # NEW: Operational Default Logic for Ground Truth Generation
+    logic_instructions = """
+    CRITICAL INSTRUCTIONS FOR GROUND TRUTH GENERATION:
+    1. OPERATIONAL DEFAULT: If the data rows are empty or a status field is null,
+       but the entity (Station/Route/Elevator) was resolved, the ground truth
+       MUST state that the status is 'OK' or 'Operational'.
+    2. NO AMBIGUITY: Do not use phrases like 'information is unavailable' or
+       'status is unknown' if there is no evidence of an outage.
+    3. NUMERICAL PRECISION: If numbers are present, the ground truth must
+       include the exact counts. Do not round numbers.
+    4. ENTITY LIMIT: Only include entities explicitly listed in the rows.
+    """
+
     rows_json = json.dumps(rows[:_LLM_ROW_LIMIT], default=str, indent=2)
-    prompt = f"""You are writing a ground truth statement for an LLM evaluation dataset.
+    prompt = f"""{logic_instructions} You are writing a ground truth statement for an LLM evaluation dataset.
 
-Question: {question}
+User Question: {question}
 
-Oracle query result (verified data from the graph database):
+Raw Data:
 {rows_json}
 
 Write a concise factual statement (2-5 sentences) that describes what a correct answer
@@ -113,12 +148,18 @@ def patch_ground_truth_batch(file: Path, updates: dict[str, str]) -> None:
     for q in questions:
         if q["id"] in updates:
             q["ground_truth"] = updates[q["id"]]
-    file.write_text(yaml.dump(questions, allow_unicode=True, sort_keys=False, width=100))
+    file.write_text(
+        yaml.dump(questions, allow_unicode=True, sort_keys=False, width=100)
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate eval questions against Neo4j")
-    parser.add_argument("--file", help="Limit to a single question file (e.g. hani.yaml)")
+    parser = argparse.ArgumentParser(
+        description="Validate eval questions against Neo4j"
+    )
+    parser.add_argument(
+        "--file", help="Limit to a single question file (e.g. hani.yaml)"
+    )
     parser.add_argument("--id", help="Limit to a single question ID (e.g. hani_001)")
     parser.add_argument(
         "--write-ground-truth",
@@ -161,7 +202,9 @@ def main() -> None:
             question_text = q["question"]
 
             print(f"\n{'─' * 70}")
-            print(f"  {qid}  [{q.get('category', '?')}]  domain={q.get('domain', 'null')}")
+            print(
+                f"  {qid}  [{q.get('category', '?')}]  domain={q.get('domain', 'null')}"
+            )
             print(f"  Q: {question_text}")
 
             if is_adversarial(q):
@@ -188,7 +231,9 @@ def main() -> None:
 
                 if args.write_ground_truth:
                     print("  ↳  generating ground truth statement via LLM...")
-                    gt = ground_truth_from_rows(rows, question_text, llm_client, llm_model)
+                    gt = ground_truth_from_rows(
+                        rows, question_text, llm_client, llm_model
+                    )
                     pending_patches[q["_file"]][qid] = gt
                     print(f"  ↳  queued: {gt[:80]}...")
 
@@ -199,7 +244,9 @@ def main() -> None:
 
     total = len(questions)
     print(f"\n{'═' * 70}")
-    print(f"  Results: {passed} passed  |  {no_data} no data  |  {skipped} skipped  |  {total} total")
+    print(
+        f"  Results: {passed} passed  |  {no_data} no data  |  {skipped} skipped  |  {total} total"
+    )
 
     if no_data:
         print(

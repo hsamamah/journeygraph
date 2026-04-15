@@ -103,3 +103,14 @@ RETURN
   d.date                        AS date
 ORDER BY affected_trips DESC
 LIMIT 15;
+
+// ── Q7: Disruption count at a station — all interruption types ───────────
+// "What disruptions are there at Washington?" / "Are there disruptions at Reagan National?"
+// Joins via AFFECTS_ROUTE → Route → SERVES → Station — NOT via AFFECTS_TRIP or Platform.
+// AFFECTS_TRIP and SCHEDULED_AT → Platform are for trip-level queries only.
+// For station-level disruption counts always use the route path.
+// Handles ambiguous station names: return one row per matching station with count.
+MATCH (s:Station) WHERE s.name CONTAINS $station_name
+OPTIONAL MATCH (i:Interruption)-[:AFFECTS_ROUTE]->(r:Route)-[:SERVES]->(s)
+RETURN s.name AS station, s.id AS station_id, count(DISTINCT i) AS disruption_count
+ORDER BY s.name;
