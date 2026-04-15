@@ -23,7 +23,7 @@ Columns explained:
 
 ---
 
-## Current State (Partial — as of 2026-04-14)
+## Current State (as of 2026-04-15)
 
 ### Questions authored
 
@@ -31,43 +31,68 @@ Columns explained:
 |---|---|---|---|
 | `questions/hani.yaml` | 13 | transfer_impact (4), accessibility (3), delay_propagation (3), adversarial (1), noise (3) | Complete. Noise variants (typo, colloquial, underspecified) included. |
 | `questions/hani_gds.yaml` | 10 | transfer_impact/GDS (9), accessibility (1) | GDS-focused questions (PageRank, betweenness, Dijkstra, BFS, Louvain, WCC, degree). |
-| **Remaining contributors** | **0** | — | **Not yet authored. See gap table below.** |
+| `questions/lauren.yaml` | 34 | transfer_impact (8), accessibility (7), delay_propagation (7), adversarial (4), noise (4), edge_case (4) | Multi-domain coverage with noise and edge case variants. |
 
 ### Gaps to fill before the slide numbers are final
 
 | What is missing | Why it matters |
 |---|---|
-| Additional question authors / files | The eval README targets 10 questions per contributor. Only one contributor file exists beyond GDS. Pass rates from 13 questions are not representative enough for a slide claim. |
-| More adversarial questions | Currently 1 adversarial question in `hani.yaml`. The table needs ≥ 3–5 to report a meaningful rejection rate. |
-| Multi-author coverage for all three domains | `delay_propagation` and `accessibility` are each covered by only 3 happy-path questions in hani.yaml. More variety (different anchors, hop depths) is needed to avoid overfitting the reported numbers. |
+| More adversarial questions | Currently 5 adversarial questions total. Ideally ≥ 3–5 per contributor for a robust rejection rate claim. |
+| GDS planner routing fixes | 6/10 GDS questions fail because the planner refuses to execute rather than calling GDS tools. Fixing this will significantly move transfer_impact scores. |
+| Graph refresh same day as eval | Implicit temporal anchors ("most recently", "right now") fail when graph data is stale. Numbers below reflect same-day-fresh data. |
 
 ---
 
-## Numbers from Latest Scored Run (`20260409_005903_scored.jsonl`)
+## Numbers from Latest Scored Run (`20260415_150857_scored.jsonl`)
 
-These are the **current partial numbers** across all configs. Do not use directly for
-the slide — they are from a single contributor file and reflect known data-freshness
-failures (implicit temporal anchors failing when the graph is not refreshed same-day).
+Single `default` config, 57 questions across all three contributor files.
 
 | Domain | Pass Rate | Avg Faithfulness | Avg Answer Relevance | Dominant Narration Mode |
 |---|---|---|---|---|
-| transfer_impact | 0 / 20 (0%) | 0.10 | 0.00 | degraded |
-| accessibility | 2 / 20 (10%) | 0.36 | 0.47 | contextual |
-| delay_propagation | 2 / 20 (10%) | 0.16 | 0.17 | degraded |
-| adversarial | 3 / 3 (100% rejected) | — | — | rejected |
+| transfer_impact | 15 / 28 (54%) | 0.63 | 0.62 | contextual |
+| accessibility | 5 / 12 (42%) | 0.46 | 0.55 | contextual |
+| delay_propagation | 7 / 12 (58%) | 0.67 | 0.68 | contextual |
+| adversarial | 5 / 5 (100% rejected) | — | — | rejected |
 
-Rows are counted across all 5 configs (`default`, `high_candidates`, `force_subgraph`,
-`force_both`, `tight_budget`), so each question appears 5 times. To see per-question
-pass counts, filter to `config_name = "default"` only.
+### GDS vs Non-GDS breakdown
+
+| Question type | Pass Rate | Notes |
+|---|---|---|
+| GDS questions (`hani_gds_*`, `lauren_029–034`) | 4 / 10 (40%) | Majority of failures are planner refusals, not bad answers |
+| Regular questions (non-GDS) | 28 / 47 (60%) | Failures are mix of hallucination, incomplete retrieval, ambiguous anchors |
+
+### By category
+
+| Category | Pass Rate |
+|---|---|
+| happy_path | 17 / 33 (52%) |
+| edge_case | 6 / 11 (55%) |
+| noise | 4 / 8 (50%) |
+| adversarial | 5 / 5 (100%) |
 
 ### Root cause of low scores
 
-The dominant failure mode is `degraded` narration — both retrieval paths returned no
-data. The primary cause is **implicit temporal anchors** ("most recently", "right now")
-that the AnchorResolver cannot ground when the graph's Date nodes are not current-day
-fresh. This is a data-freshness issue, not a model quality issue. Running the pipeline
-with fresh interruption/accessibility data before eval is expected to significantly
-improve transfer_impact and delay_propagation scores.
+Two distinct failure modes:
+
+1. **GDS planner refusals** — The planner returns "no data available" for GDS-mode questions (betweenness centrality, Louvain clusters, BFS reachability, Dijkstra shortest path). These questions have `expected_query_mode: gds` but the planner falls back to a cypher-only path and finds no matching tool. This is the dominant failure in `transfer_impact` and explains the GDS pass rate gap.
+
+2. **Hallucination / incomplete retrieval** — Narration agent interpolates facts not present in the graph (wrong elevator status, fabricated escalator IDs, extra bus routes). Affects `accessibility` scores most heavily.
+
+---
+
+## Notable Failures and Proposed Fixes
+
+| Question | ID | Score | Failure Reason | Proposed Fix |
+|---|---|---|---|---|
+| "Which stations are the biggest choke points…" | `hani_gds_003` | 0.00 | Planner refuses to execute — claims no data for betweenness centrality query | GDS tool routing: planner needs explicit GDS-capable intent signals; add betweenness centrality to planner's tool dispatch table |
+| "Which stations can I reach from L'Enfant Plaza within 2 transfers?" | `hani_gds_006` | 0.50 | Planner acknowledges limitation rather than executing BFS | Wire BFS/reachability intent to GDS BFS tool; planner currently has no handler for hop-bounded reachability questions |
+| `lauren_029`–`lauren_034` (GDS) | `lauren_029`–`034` | 0.00 | All refuse to answer — Louvain clusters, Dijkstra, centrality comparisons, BFS from Gallery Place | Same root cause as above; the entire GDS tool dispatch path is not reachable from lauren's question phrasings |
+| "What disruptions are there at Washington?" | `hani_007` | 0.25 | Anchor resolves to Reagan National Airport (0 results) instead of a broader DC search | AnchorResolver: city-name anchors should broaden to all stations in the metro area, not resolve to a single station match |
+| "Any bus delays downtown right now?" | `hani_013` | 0.00 | System refuses entirely — cannot ground spatial anchor "downtown" | Add fallback for unresolvable spatial anchors: return all active delays system-wide rather than refusing |
+| "Are there any elevator outages at Metro Center…" | `hani_010` | 0.17 | Fabricated elevator status ("Resolved") when ground truth is "active"; hallucinated details | Narration agent must read status field directly from graph facts, not infer from context |
+| "any elevator issues at galery place rn" | `lauren_017` | 0.35 | Fabricated elevator IDs not present in ground truth | Same hallucination issue — elevator ID enumeration must be grounded in retrieved nodes only |
+| "What types of pathway infrastructure exist…" | `lauren_013` | 0.20 | Returns 3 of 7 pathway types; misrepresents counts | Pathway query needs `DISTINCT type` over full graph, not just the matched subgraph |
+| "Which bus routes had both skipped trips and delay interruptions?" | `lauren_024` | 0.50 | Correctly identifies 20 routes but fabricates 6 extra routes | Cypher set-intersection join condition is too loose — tighten to exact match on route ID |
 
 ---
 
@@ -127,9 +152,10 @@ EOF
 
 ## Question Coverage Checklist (for slide readiness)
 
-- [ ] At least 3 contributor question files authored and validated
-- [ ] Each domain has ≥ 5 unique questions (excluding noise variants)
-- [ ] At least 3 adversarial questions total
+- [x] At least 3 contributor question files authored and validated
+- [x] Each domain has ≥ 5 unique questions (excluding noise variants)
+- [x] At least 3 adversarial questions total
+- [ ] GDS planner routing fixed (currently 40% pass rate on GDS questions)
 - [ ] Graph refreshed same day as final eval run
 - [ ] Ground truths regenerated after refresh
 - [ ] Harness run completed with `--config default`
