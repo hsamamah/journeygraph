@@ -3,13 +3,16 @@
 // GDS analytical queries for the WMATA knowledge graph
 //
 // GDS 2.6+ requires a NAMED graph (string argument) — anonymous inline maps
-// are not supported. Each query uses the two-step pattern:
-//   1. CALL gds.graph.project('tmpName', nodeLabels, relConfig) YIELD graphName
-//   2. CALL gds.algorithm.stream(graphName, {config}) YIELD ...
+// are not supported. Each query uses the three-step pattern:
+//   1. CALL gds.graph.drop('tmpName', false) YIELD graphName AS _dropped
+//   2. CALL gds.graph.project('tmpName', nodeLabels, relConfig) YIELD graphName
+//   3. CALL gds.algorithm.stream(graphName, {config}) YIELD ...
 //
-// Named temporary graphs are dropped by the caller after the query returns.
-// Use the single-query chaining form (project YIELD graphName → algorithm)
-// so the graph name flows through Cypher without a separate statement.
+// Step 1 (drop) is idempotent — the false flag suppresses errors when the graph
+// does not exist. YIELD graphName AS _dropped aliases the variable to avoid
+// a "Variable already declared" conflict with the project YIELD on step 2.
+// This pattern is required for retry-safe execution: if a prior attempt left a
+// named graph behind, step 1 cleans it up before projecting a fresh one.
 //
 // Graph model notes:
 //   Station nodes carry .id (e.g. 'STN_A01_C01') and .name
@@ -29,6 +32,7 @@
 // "What is the shortest path from Metro Center to Pentagon City?"
 // Projects Station+Route bipartite graph, finds hop-optimal path.
 // $station_id_from / $station_id_to are resolved anchor IDs.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -45,6 +49,7 @@ LIMIT 1;
 // "Which stations are the most important transfer hubs on the metro network?"
 // PageRank on Route-Station bipartite graph: stations served by more
 // important routes (those that serve important stations) score higher.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -63,6 +68,7 @@ LIMIT 10;
 // "Which stations are the biggest choke points on the WMATA network?"
 // High betweenness = many shortest paths in the Route-Station graph pass
 // through this station. Removing it would disrupt the most connections.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -79,6 +85,7 @@ LIMIT 10;
 // ── Q4: Degree centrality — stations with most direct route connections ────
 // "Which stations have the most connections to other stations?"
 // Degree of a Station node = number of rail routes that serve it.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -95,6 +102,7 @@ LIMIT 10;
 // ── Q5: Louvain community detection — natural station clusters ────────────
 // "Which groups of stations naturally cluster together on the network?"
 // Communities in the Route-Station graph correspond to route corridors.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -113,6 +121,7 @@ ORDER BY station_count DESC;
 // ── Q6: Weakly connected components — isolated station groups ─────────────
 // "Are there any stations disconnected from the main WMATA network?"
 // In the Route-Station graph all 98 stations should form one component.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -132,6 +141,7 @@ ORDER BY station_count DESC;
 // "Which pairs of stations serve the most similar set of routes?"
 // nodeSimilarity on the bipartite Route-Station graph measures Jaccard
 // similarity based on shared routes between station pairs.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'NATURAL'}})
 YIELD graphName
@@ -150,6 +160,7 @@ LIMIT 15;
 // "Which stations can be reached from L'Enfant Plaza within 2 transfers?"
 // maxDepth:2 in the bipartite graph = Station → Route → Station (one transfer).
 // $station_id is the resolved anchor ID for the source station.
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -168,6 +179,7 @@ ORDER BY reachable_station;
 // "Which stations are part of the most tightly connected interchange clusters?"
 // In the bipartite Route-Station graph, triangles form when two stations
 // share two common routes (both served by the same pair of lines).
+CALL gds.graph.drop('tmpGds', false) YIELD graphName AS _dropped
 CALL gds.graph.project('tmpGds', ['Station', 'Route'],
     {SERVES: {type: 'SERVES', orientation: 'UNDIRECTED'}})
 YIELD graphName
@@ -188,6 +200,7 @@ LIMIT 10;
 // Pathway nodes connected by LINKS), then BFS from one entrance.
 // Nodes returned = everything reachable = the accessible footprint.
 // Replace station name to check any station.
+CALL gds.graph.drop('accessBFS', false) YIELD graphName AS _dropped
 CALL gds.graph.project('accessBFS',
     ['StationEntrance', 'Platform', 'FareGate', 'Pathway'],
     {LINKS: {type: 'LINKS', orientation: 'UNDIRECTED'}})

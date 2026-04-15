@@ -23,6 +23,8 @@
 // "Is the elevator at Metro Center out of service?"
 // Uses $station_id from anchor resolver (e.g. 'STN_A01_C01').
 // OPTIONAL MATCH — null o fields mean no outage recorded (elevator working).
+// o.estimated_return is stored as epoch milliseconds — convert with
+// datetime({epochMillis: o.estimated_return}).toString() for readability.
 MATCH (s:Station {id: $station_id})
 MATCH (s)-[:CONTAINS]->(e:Pathway:Elevator)
 OPTIONAL MATCH (o:OutageEvent)-[:AFFECTS]->(e)
@@ -34,7 +36,9 @@ RETURN
   o.unit_name                  AS outage_unit,
   o.status                     AS status,
   o.symptom_description        AS symptom,
-  o.estimated_return           AS eta
+  CASE WHEN o.estimated_return IS NOT NULL
+       THEN datetime({epochMillis: o.estimated_return}).toString()
+       ELSE null END            AS eta
 ORDER BY o.date_updated DESC;
 
 // ── Q2: Elevator outage status at a station (name fallback) ──────────────
@@ -51,7 +55,9 @@ RETURN
   o.unit_name                  AS outage_unit,
   o.status                     AS status,
   o.symptom_description        AS symptom,
-  o.estimated_return           AS eta
+  CASE WHEN o.estimated_return IS NOT NULL
+       THEN datetime({epochMillis: o.estimated_return}).toString()
+       ELSE null END            AS eta
 ORDER BY o.date_updated DESC;
 
 // ── Q3: Escalator level coverage at a station ────────────────────────────
@@ -118,7 +124,9 @@ RETURN
   o.unit_name                  AS outage_unit,
   o.status                     AS status,
   o.symptom_description        AS symptom,
-  o.estimated_return           AS eta
+  CASE WHEN o.estimated_return IS NOT NULL
+       THEN datetime({epochMillis: o.estimated_return}).toString()
+       ELSE null END            AS eta
 ORDER BY o.date_updated DESC;
 
 // ── Q6: Accessibility interruptions at a station (GTFS-RT source) ────────

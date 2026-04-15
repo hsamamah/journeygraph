@@ -325,18 +325,14 @@ def display_agentic_step(agent_narration: NarrationOutput) -> None:
     if agent_narration.agent_trace:
         history = agent_narration.agent_trace.get("tool_call_history", [])
         print(f"  tools   : {len(history)} call(s)")
-        for call in history:
+        for i, call in enumerate(history, 1):
             if isinstance(call, dict):
-                name = call.get("tool_name", "?")
-                summary = call.get("summary", "")
-                iteration = call.get("iteration", "?")
-            elif isinstance(call, (list, tuple)):
-                name = call[0] if call else "?"
-                summary = ""
-                iteration = "?"
+                name = call.get("tool", "?")
+                out = call.get("output", {})
+                summary = out.get("summary", out.get("error", ""))
             else:
-                name = summary = iteration = "?"
-            print(f"    [{iteration}] {name} — {summary}")
+                name = summary = "?"
+            print(f"    [{i}] {name} — {summary}")
     print(f"\n  Answer:\n{'═' * 56}")
     print(agent_narration.answer)
     print("═" * 56)
@@ -469,6 +465,5 @@ def run_and_display(
     display_t2c_step(result.t2c_output, result.t2c_cot)
     display_narration_step(result.narration_output, label="Static")
     display_agentic_step(result.agent_narration)
-    display_comparison_todo()
 
     return result
