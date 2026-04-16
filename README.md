@@ -170,6 +170,7 @@ tests/
 │   └── README.md
 └── llm/ + *.py          ← Unit tests
 demos/                   ← Jupyter notebooks (GDS path-finding demos)
+docs/                    ← General documents for project direction and validation
 CONVENTIONS.md           ← WMATA-specific feed conventions and assumptions
 ```
 
